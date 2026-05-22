@@ -1,6 +1,25 @@
 # Void Claude Code Enhancer & Status Bar 🚀
 
-A standardized, one-click installer utility to enhance and patch the official Anthropic Claude Code extension inside Void Editor.
+A standardized, one-click installer utility to enhance and patch the official Anthropic Claude Code extension inside Void Editor, Cursor, and VS Code.
+
+---
+
+### 📋 Verified & Tested Version:
+* **Claude Code Extension Version:** `2.1.145` (Released May 21, 2026)
+* **Status:** `Active & Verified`
+
+---
+
+## 💻 Multi-IDE Support (VS Code, Cursor, Windsurf)
+
+Because VS Code, Cursor, and Windsurf all share the identical extension engine and folder structures, this patcher can easily work across any editor! 
+
+The installer script automatically scans and detects where your active editor stores its extensions in this order:
+1. **Void Editor:** `~/.void-editor/extensions/`
+2. **VS Code:** `~/.vscode/extensions/`
+3. **Cursor:** `~/.cursor/extensions/`
+
+Simply run the installer and it will configure the patched files for whichever editor extensions are present on your computer!
 
 ---
 
