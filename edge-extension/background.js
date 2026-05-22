@@ -2,7 +2,7 @@ const PORT = 54321;
 const ORG_ID = "{{ORG_ID}}";
 
 // Helper to post data to localhost server
-async function postToVoid(data) {
+async function postToLocalhost(data) {
   try {
     const r = await fetch(`http://localhost:${PORT}/usage`, {
       method: "POST",
@@ -27,7 +27,7 @@ async function fetchAndPostUsage() {
     if (!r.ok) return;
     const data = await r.json();
     console.log("[ClaudeUsage] background fetched successfully, posting...");
-    await postToVoid(data);
+    await postToLocalhost(data);
   } catch (e) {
     console.log("[ClaudeUsage] background fetch error:", e.message);
   }
@@ -37,7 +37,7 @@ async function fetchAndPostUsage() {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "usage") {
     console.log("[ClaudeUsage] message received from content script, posting...");
-    postToVoid(msg.data);
+    postToLocalhost(msg.data);
   }
 });
 

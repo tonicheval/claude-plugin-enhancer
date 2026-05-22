@@ -12,7 +12,7 @@ const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
 
 console.log(`${CYAN}${BOLD}====================================================`);
-console.log(`        VOID CLAUDE CODE ENHANCER INSTALLER         `);
+console.log(`          CLAUDE PLUGIN ENHANCER INSTALLER          `);
 console.log(`====================================================${RESET}\n`);
 
 try {
@@ -231,7 +231,7 @@ try {
         applyWjs('S0.default.createElement("span",{className:w2.sessionName},Le1(Kk(Z),Q))', 'S0.default.createElement("span",{className:w2.sessionName},(()=>{let _t=Kk(Z),_m=/^(\\[[^\\]]+\\])(.*)/.exec(_t);if(_m&&Z.isShared&&Z.isShared.value)return S0.default.createElement(S0.default.Fragment,null,S0.default.createElement("em",null,Le1(_m[1],Q)),Le1(_m[2],Q));return Le1(_t,Q)})())', 'P12_wjs_c (isShared italic rendering)');
         
         // Save backup copies of fully patched files
-        const safeBackupDir = path.join(homedir, '.claude', 'void-patches', 'v2.1.145');
+        const safeBackupDir = path.join(homedir, '.claude', 'claude-patches', 'v2.1.145');
         if (!fs.existsSync(safeBackupDir)) {
             fs.mkdirSync(safeBackupDir, { recursive: true });
         }
@@ -249,7 +249,7 @@ try {
     // 5. Silent Startup Automation Setup
     // ----------------------------------------------------
     console.log(`\n${BOLD}[5/5] Registering silent Windows Startup script...${RESET}`);
-    const patchesDir = path.join(homedir, '.claude', 'void-patches');
+    const patchesDir = path.join(homedir, '.claude', 'claude-patches');
     if (!fs.existsSync(patchesDir)) {
         fs.mkdirSync(patchesDir, { recursive: true });
     }
@@ -277,7 +277,7 @@ try {
     console.log(`🎉 ENHANCER INSTALLATION COMPLETED SUCCESSFULLY!`);
     console.log(`====================================================${RESET}\n`);
     console.log(`To apply all changes:`);
-    console.log(`  1. ${BOLD}Restart Void fully${RESET} (Close the application entirely, then reopen it).`);
+    console.log(`  1. ${BOLD}Restart your Editor fully${RESET} (Close the application entirely, then reopen it).`);
     console.log(`  2. ${BOLD}Reload the Edge Extension${RESET} in edge://extensions (Click ↺ Reload).`);
     console.log(`  3. The status bar will now instantly auto-refresh completely in the background!\n`);
     

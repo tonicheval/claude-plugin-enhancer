@@ -1,5 +1,5 @@
 @echo off
-title Void Claude Code Enhancer Installer
-echo Running Void Claude Code Enhancer Installation...
+title Claude Plugin Enhancer Installer
+echo Running Claude Plugin Enhancer Installation...
 node "%~dp0install.js"
 pause

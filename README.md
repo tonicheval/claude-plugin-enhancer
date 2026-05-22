@@ -1,6 +1,6 @@
-# Void Claude Code Enhancer & Status Bar 🚀
+# Claude Plugin Enhancer & Status Bar 🚀
 
-A standardized, one-click installer utility to enhance and patch the official Anthropic Claude Code extension inside Void Editor, Cursor, and VS Code.
+A standardized, one-click installer utility to enhance and patch the official Anthropic Claude Code extension inside VS Code-based editors (Void, Cursor, VS Code).
 
 ---
 
@@ -38,9 +38,9 @@ Simply run the installer and it will configure the patched files for whichever e
 
 3. **🔄 Silent Startup Automation**
    * Automatically configures a silent background script upon PC boot.
-   * Launches Edge minimized, waits 8 seconds for the initial cache refresh, and then shuts Edge down invisibly to ensure your status bar is populated the moment you start working in Void.
+   * Launches Edge minimized, waits 8 seconds for the initial cache refresh, and then shuts Edge down invisibly to ensure your status bar is populated the moment you start working.
 
-4. **📂 Void Extension Sidebar Fixes**
+4. **📂 Extension Sidebar Fixes**
    * **P1 Sidebar Retention:** Forces the sessions panel sidebar to remain permanently open.
    * **P2/P3 realpath Bypass:** Fixes session history rendering over RaiDrive / UNC mounts.
    * **P4/P5 Live Rename Race Fix:** Prevents freshly renamed sessions from instantly reverting.
@@ -53,12 +53,12 @@ Simply run the installer and it will configure the patched files for whichever e
 
 ## How to Install or Reapply Patches
 
-Whenever the **Void Editor auto-updates** and wipes the extension directory, you can restore all patches with **zero prompts** and **zero AI required** in under a second:
+Whenever your **editor auto-updates** and wipes the extension directory, you can restore all patches with **zero prompts** and **zero AI required** in under a second:
 
-1. **Close Void completely.**
+1. **Close your editor completely.**
 2. **Double-click `install.bat`** (or open a terminal in this directory and run `node install.js`).
-3. **Open Void.**
-4. Go to **`edge://extensions`** in Microsoft Edge and click **↺ Reload** on the **Claude Usage for Void** extension to wake up the service worker.
+3. **Open your editor.**
+4. Go to **`edge://extensions`** in Microsoft Edge and click **↺ Reload** on the **Claude Plugin Enhancer** extension to wake up the service worker.
 5. Everything is instantly restored!
 
 ---
