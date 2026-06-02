@@ -25,9 +25,24 @@ async function setCookieRule(cookieString) {
       type: "modifyHeaders",
       requestHeaders: [
         {
-          header: "Cookie",
+          header: "cookie",
           operation: "set",
           value: cookieString
+        },
+        {
+          header: "origin",
+          operation: "set",
+          value: "https://claude.ai"
+        },
+        {
+          header: "referer",
+          operation: "set",
+          value: "https://claude.ai/"
+        },
+        {
+          header: "sec-fetch-site",
+          operation: "set",
+          value: "same-origin"
         }
       ]
     },
@@ -46,6 +61,12 @@ async function setCookieRule(cookieString) {
   } catch (e) {
     console.error("[ClaudeUsage] failed to set declarativeNetRequest rule:", e.message);
   }
+}
+
+if (chrome.declarativeNetRequest.onRuleMatchedDebug) {
+  chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((info) => {
+    console.log("[ClaudeUsage] Rule matched debug:", info);
+  });
 }
 
 async function removeCookieRule() {
