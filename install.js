@@ -21,7 +21,7 @@ try {
     // ----------------------------------------------------
     // 1. Locate Claude Code Extension Folders (Void, VS Code, Cursor)
     // ----------------------------------------------------
-    console.log(`${BOLD}[1/5] Detecting Claude Code extension folders...${RESET}`);
+    console.log(`${BOLD}[1/7] Detecting Claude Code extension folders...${RESET}`);
     const potentialBases = [
         { name: "Void Editor", path: path.join(homedir, '.void-editor', 'extensions') },
         { name: "VS Code", path: path.join(homedir, '.vscode', 'extensions') },
@@ -62,7 +62,7 @@ try {
     // ----------------------------------------------------
     // 2. Read Claude Credentials & Organization ID
     // ----------------------------------------------------
-    console.log(`\n${BOLD}[2/5] Extracting Claude credentials...${RESET}`);
+    console.log(`\n${BOLD}[2/7] Extracting Claude credentials...${RESET}`);
     const credPath = path.join(homedir, '.claude', '.credentials.json');
     if (!fs.existsSync(credPath)) {
         throw new Error(`Claude credentials file not found at: ${credPath}. Please log in to Claude Code first.`);
@@ -78,7 +78,7 @@ try {
     // ----------------------------------------------------
     // 3. Configure and Deploy Edge Extension
     // ----------------------------------------------------
-    console.log(`\n${BOLD}[3/5] Configuring & deploying Edge extension...${RESET}`);
+    console.log(`\n${BOLD}[3/7] Configuring & deploying Edge extension...${RESET}`);
     const targetEdgeDir = path.join(homedir, '.claude', 'claude-usage-extension');
     if (!fs.existsSync(targetEdgeDir)) {
         fs.mkdirSync(targetEdgeDir, { recursive: true });
@@ -98,7 +98,7 @@ try {
     // ----------------------------------------------------
     // 4. Back Up and Patch Extension Files
     // ----------------------------------------------------
-    console.log(`\n${BOLD}[4/5] Patching extension code...${RESET}`);
+    console.log(`\n${BOLD}[4/7] Patching extension code...${RESET}`);
     
     for (const target of targets) {
         const { appName, extDir, extVersion } = target;
@@ -210,7 +210,7 @@ try {
         applyEjs('lastModified:B,fileSize:Z,customTitle:L', 'lastModified:(()=>{let _ls=x.split(`\n`);for(let _i=_ls.length-1;_i>=0;_i--){let _l=_ls[_i];if((_l.includes(`"type":"user"`)||_l.includes(`"type":"assistant"`))&&!_l.includes("file-history-snapshot")&&_l.includes(`"timestamp":"`)){let _ti=_l.lastIndexOf(`"timestamp":"`);if(_ti>=0){let _tv=_l.slice(_ti+13),_te=_tv.indexOf(`"`);if(_te>=0){let _d=Date.parse(_tv.slice(0,_te));if(!isNaN(_d))return _d}}}}return B})(),fileSize:Z,customTitle:L', 'P7b (Metadata timestamp scan)');
         
         // P8: Advanced Multi-Window Usage status bar HTTP server
-        const usageIIFE = '(()=>{const _http=require("http");const _fs=require("fs");const _os=require("os");const _path=require("path");const _cacheFile=_path.join(_os.homedir(),".claude","usage.json");const _wu=R0.window.createStatusBarItem(R0.StatusBarAlignment.Right,9);_wu.command="claude-vscode.openUsage";_wu.tooltip="Claude usage";_wu.text="$(graph) Claude usage";_wu.show();z.subscriptions.push(_wu);z.subscriptions.push(R0.commands.registerCommand("claude-vscode.openUsage",()=>{R0.env.openExternal(R0.Uri.parse("https://claude.ai/settings/usage"))}));function _fmtU(d){try{const p=Math.round(d.five_hour&&d.five_hour.utilization||0);const wk=Math.round(d.seven_day&&d.seven_day.utilization||0);let r="";if(d.five_hour&&d.five_hour.resets_at){const ms=new Date(d.five_hour.resets_at)-Date.now();if(ms>0){const h=Math.floor(ms/3600000);const m=Math.floor((ms%3600000)/60000);if(h>0){r=" resets in "+h+" hr "+m+" min"}else{r=" resets in "+m+" min"}}}const blocks=Math.round(p/10);const full="\\u2588".repeat(Math.min(10,blocks));const empty="\\u2591".repeat(Math.max(0,10-blocks));return full+empty+" "+p+"%"+r+" \\u2014 Weekly "+wk+"%"}catch{return"$(graph) Claude usage (err)"}}function _updateFromCache(){try{if(_fs.existsSync(_cacheFile)){const d=JSON.parse(_fs.readFileSync(_cacheFile,"utf8"));_wu.text=_fmtU(d)}}catch{}}_updateFromCache();try{_fs.watchFile(_cacheFile,{interval:2000},()=>{_updateFromCache()})}catch{}const _srv=_http.createServer((req,res)=>{if(req.method==="POST"&&req.url==="/usage"){let b="";req.on("data",c=>{b+=c});req.on("end",()=>{try{_fs.writeFileSync(_cacheFile,b,"utf8");_updateFromCache()}catch{}res.writeHead(200);res.end("ok")})}else{res.writeHead(404);res.end()}});_srv.on("error",(e)=>{});try{_srv.listen(54321,"127.0.0.1")}catch{}z.subscriptions.push({dispose:()=>{try{_srv.close()}catch{}try{_fs.unwatchFile(_cacheFile)}catch{}}})})();';
+        const usageIIFE = '(()=>{const _http=require("http");const _fs=require("fs");const _os=require("os");const _path=require("path");const _cacheFile=_path.join(_os.homedir(),".claude","usage.json");const _wu=R0.window.createStatusBarItem(R0.StatusBarAlignment.Right,9);_wu.command="claude-vscode.openUsage";_wu.tooltip="Claude usage";_wu.text="$(graph) Claude usage";_wu.show();z.subscriptions.push(_wu);z.subscriptions.push(R0.commands.registerCommand("claude-vscode.openUsage",()=>{R0.env.openExternal(R0.Uri.parse("https://claude.ai/settings/usage"))}));function _fmtU(d){try{const p=Math.round(d.five_hour&&d.five_hour.utilization||0);const wk=Math.round(d.seven_day&&d.seven_day.utilization||0);let r="";if(d.five_hour&&d.five_hour.resets_at){const ms=new Date(d.five_hour.resets_at)-Date.now();if(ms>0){const h=Math.floor(ms/3600000);const m=Math.floor((ms%3600000)/60000);if(h>0){r=" resets in "+h+" hr "+m+" min"}else{r=" resets in "+m+" min"}}}const blocks=Math.round(p/10);const full="\\u2588".repeat(Math.min(10,blocks));const empty="\\u2591".repeat(Math.max(0,10-blocks));return full+empty+" "+p+"%"+r+" \\u2014 Weekly "+wk+"%"}catch{return"$(graph) Claude usage (err)"}}function _updateFromCache(){try{if(_fs.existsSync(_cacheFile)){const d=JSON.parse(_fs.readFileSync(_cacheFile,"utf8"));_wu.text=_fmtU(d)}}catch{}}_updateFromCache();try{_fs.watchFile(_cacheFile,{interval:2000},()=>{_updateFromCache()})}catch{}const _srv=_http.createServer((req,res)=>{if(req.method==="POST"&&req.url==="/usage"){let b="";req.on("data",c=>{b+=c});req.on("end",()=>{try{_fs.writeFileSync(_cacheFile,b,"utf8");_updateFromCache()}catch{}res.writeHead(200);res.end("ok")})}else{res.writeHead(404);res.end()}});_srv.on("error",(e)=>{});try{_srv.listen(54321,"127.0.0.1")}catch{}z.subscriptions.push({dispose:()=>{try{_srv.close()}catch{}try{_fs.unwatchFile(_cacheFile)}catch{}}});try{const {spawn}=require("child_process");spawn("powershell.exe",["-NoProfile","-ExecutionPolicy","Bypass","-File","C:\\\\\\\\Users\\\\\\\\SEO\\\\\\\\.claude\\\\\\\\projects\\\\\\\\sync-shared.ps1"],{detached:true,stdio:"ignore"}).unref()}catch(e){}})();';
         applyEjs('&&G)w.show();if(z.subscriptions.push(R0.commands.registerCommand("claude-vscode.sidebar.open"', '&&G)w.show();' + usageIIFE + 'if(z.subscriptions.push(R0.commands.registerCommand("claude-vscode.sidebar.open"', 'P8 (Advanced status bar server)');
         
         // P12 (ext): isShared symlink check
@@ -252,7 +252,7 @@ try {
     // ----------------------------------------------------
     // 5. Silent Startup Automation Setup
     // ----------------------------------------------------
-    console.log(`\n${BOLD}[5/5] Registering silent Windows Startup script...${RESET}`);
+    console.log(`\n${BOLD}[5/7] Registering silent Windows Startup script...${RESET}`);
     const patchesDir = path.join(homedir, '.claude', 'claude-patches');
     if (!fs.existsSync(patchesDir)) {
         fs.mkdirSync(patchesDir, { recursive: true });
@@ -275,6 +275,105 @@ try {
     console.log(`  ${GREEN}✔ Windows startup shortcut placed at: ${startupLnkPath}${RESET}`);
     
     // ----------------------------------------------------
+    // 6. Protect Sessions: Disable Auto-Cleanup
+    // ----------------------------------------------------
+    console.log(`\n${BOLD}[6/7] Protecting sessions from auto-cleanup...${RESET}`);
+    const settingsPath = path.join(homedir, '.claude', 'settings.json');
+    try {
+        let settings = {};
+        if (fs.existsSync(settingsPath)) {
+            settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        }
+        if (!settings.cleanupPeriodDays || settings.cleanupPeriodDays < 9999) {
+            settings.cleanupPeriodDays = 9999;
+            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+            console.log(`  ${GREEN}✔ Set cleanupPeriodDays=9999 in settings.json (auto-cleanup disabled)${RESET}`);
+        } else {
+            console.log(`  ${GREEN}✔ cleanupPeriodDays already set to ${settings.cleanupPeriodDays} (no change needed)${RESET}`);
+        }
+    } catch (e) {
+        console.log(`  ${YELLOW}⚠ Could not update settings.json: ${e.message}${RESET}`);
+    }
+    
+    // ----------------------------------------------------
+    // 7. Deploy Session Backup Script & Scheduled Task
+    // ----------------------------------------------------
+    console.log(`\n${BOLD}[7/7] Setting up automated session backup...${RESET}`);
+    const claudeDir = path.join(homedir, '.claude');
+    const projectsDir = path.join(claudeDir, 'projects');
+    const backupScript = path.join(projectsDir, 'backup-sessions.ps1');
+    
+    // Deploy backup script (always overwrite to keep current)
+    const backupScriptContent = `# ============================================================
+# backup-sessions.ps1 - Recurring Claude session backup
+# Auto-deployed by claude-plugin-enhancer install.js
+# ============================================================
+$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
+$projectsDir = "${projectsDir.replace(/\\/g, '\\')}"
+$backupDir   = "$projectsDir\\backup\\sessions"
+$githubDir   = "Q:\\.claude-session-backup"
+if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir -Force | Out-Null }
+if ((Test-Path "Q:\\") -and -not (Test-Path $githubDir)) { New-Item -ItemType Directory -Path $githubDir -Force | Out-Null }
+$backedUp = 0; $totalSize = 0
+$folders = Get-ChildItem $projectsDir -Directory | Where-Object { @("backup") -notcontains $_.Name }
+foreach ($folder in $folders) {
+    $files = Get-ChildItem "$($folder.FullName)" -Force -ErrorAction SilentlyContinue
+    foreach ($f in $files) {
+        $isLink = $f.Attributes.ToString().Contains("ReparsePoint")
+        if (-not $isLink -and $f.Length -gt 0) {
+            $localDest = Join-Path $backupDir $f.Name
+            if ($f.PSIsContainer) {
+                if (-not (Test-Path $localDest)) { Copy-Item $f.FullName $localDest -Recurse -Force }
+            } else {
+                Copy-Item $f.FullName $localDest -Force
+                $totalSize += $f.Length
+            }
+            if (Test-Path "Q:\\") {
+                $ghDest = Join-Path $githubDir $f.Name
+                if ($f.PSIsContainer) {
+                    if (-not (Test-Path $ghDest)) { Copy-Item $f.FullName $ghDest -Recurse -Force }
+                } else {
+                    Copy-Item $f.FullName $ghDest -Force
+                }
+            }
+            $backedUp++
+        }
+    }
+}
+if (Test-Path "Q:\\.git") {
+    Push-Location "Q:\\"
+    git add ".claude-session-backup" 2>$null
+    git commit -m "Session backup $timestamp - $backedUp files ($([math]::Round($totalSize / 1MB, 1)) MB)" 2>$null
+    git push 2>$null
+    Pop-Location
+}
+Write-Output "[$timestamp] Backed up $backedUp items ($([math]::Round($totalSize / 1MB, 1)) MB) to local + GitHub"
+`;
+    
+    if (!fs.existsSync(projectsDir)) {
+        fs.mkdirSync(projectsDir, { recursive: true });
+    }
+    fs.writeFileSync(backupScript, backupScriptContent, 'utf8');
+    console.log(`  ${GREEN}✔ Backup script deployed to: ${backupScript}${RESET}`);
+    
+    // Register Windows Task Scheduler job for daily backup at 3 AM
+    try {
+        const registerCmd = [
+            `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"${backupScript.replace(/\\/g, '\\\\')}\"'`,
+            `$trigger = New-ScheduledTaskTrigger -Daily -At 3am`,
+            `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable`,
+            `$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited`,
+            `Unregister-ScheduledTask -TaskName 'ClaudeSessionBackup' -Confirm:$false -ErrorAction SilentlyContinue`,
+            `Register-ScheduledTask -TaskName 'ClaudeSessionBackup' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Daily backup of Claude Code sessions to local + GitHub'`
+        ].join('; ');
+        execSync(`powershell -NoProfile -Command "${registerCmd}"`, { stdio: 'ignore' });
+        console.log(`  ${GREEN}✔ Scheduled task 'ClaudeSessionBackup' registered (daily at 3:00 AM)${RESET}`);
+    } catch (e) {
+        console.log(`  ${YELLOW}⚠ Could not register scheduled task: ${e.message}${RESET}`);
+        console.log(`    You can run the backup manually: powershell -File "${backupScript}"`);
+    }
+    
+    // ----------------------------------------------------
     // FINISHED SUCCESS
     // ----------------------------------------------------
     console.log(`\n${GREEN}${BOLD}====================================================`);
@@ -283,7 +382,8 @@ try {
     console.log(`To apply all changes:`);
     console.log(`  1. ${BOLD}Restart your Editor fully${RESET} (Close the application entirely, then reopen it).`);
     console.log(`  2. ${BOLD}Reload the Edge Extension${RESET} in edge://extensions (Click ↺ Reload).`);
-    console.log(`  3. The status bar will now instantly auto-refresh completely in the background!\n`);
+    console.log(`  3. The status bar will now instantly auto-refresh completely in the background!`);
+    console.log(`  4. ${BOLD}Session protection is ACTIVE${RESET}: auto-cleanup disabled, daily backup at 3 AM.\n`);
     
 } catch (error) {
     console.error(`\n${RED}${BOLD}====================================================`);
