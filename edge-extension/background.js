@@ -32,8 +32,8 @@ async function setCookieRule(cookieString) {
       ]
     },
     condition: {
-      urlFilter: `https://claude.ai/api/organizations/${ORG_ID}/usage`,
-      resourceTypes: ["xmlhttprequest"]
+      urlFilter: `*claude.ai/api/organizations/*/usage`,
+      resourceTypes: ["xmlhttprequest", "other"]
     }
   };
 
@@ -64,9 +64,12 @@ async function getCookiesString() {
   return new Promise((resolve) => {
     chrome.cookies.getAll({ domain: "claude.ai" }, (cookies) => {
       if (!cookies || cookies.length === 0) {
+        console.log("[ClaudeUsage] chrome.cookies.getAll returned 0 cookies");
         resolve("");
         return;
       }
+      const names = cookies.map(c => c.name);
+      console.log("[ClaudeUsage] Retrieved cookies:", names.join(", "));
       const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join("; ");
       resolve(cookieStr);
     });
