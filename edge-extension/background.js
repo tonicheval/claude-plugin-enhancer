@@ -40,10 +40,14 @@ async function ensureClaudeTab() {
   const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
   if (tabs && tabs.length > 0) return { tabId: tabs[0].id, autoCreated: false };
 
-  // No claude.ai tab exists - create one in a minimized window
+  // No claude.ai tab exists - create one in an off-screen window to prevent visible flashing
   const win = await chrome.windows.create({
     url: "https://claude.ai/",
-    state: "minimized",
+    state: "normal",
+    left: -3000,
+    top: -3000,
+    width: 200,
+    height: 200,
     focused: false
   });
 
