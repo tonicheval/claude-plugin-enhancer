@@ -7,18 +7,18 @@ const autoCreatedWindows = new Set();
 // Check if Void Editor's status bar server is currently running
 async function isVoidRunning() {
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1000);
-    
-    // Quick ping to localhost. If it connects, the server is running.
+    // We use no-cors to prevent the browser from blocking the check due to CORS.
+    // We do not use a short setTimeout because connection refusal on localhost is instant,
+    // and background CPU throttling can trigger short timeouts prematurely.
     await fetch(`http://localhost:${PORT}/usage`, {
       method: "HEAD",
-      signal: controller.signal
+      mode: "no-cors",
+      cache: "no-cache"
     });
-    clearTimeout(timeoutId);
     return true;
   } catch (e) {
-    return false; // Connection refused or timed out means Void is closed
+    console.log("[ClaudeUsage] isVoidRunning check failed:", e.message);
+    return false; // Connection refused means Void is closed
   }
 }
 
