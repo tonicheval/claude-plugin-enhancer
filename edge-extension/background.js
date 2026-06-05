@@ -1,7 +1,6 @@
 const PORT = 54321;
 const ORG_ID = "{{ORG_ID}}";
 
-// Helper to post data to localhost server
 async function postToLocalhost(data) {
   try {
     const r = await fetch(`http://localhost:${PORT}/usage`, {
@@ -15,46 +14,66 @@ async function postToLocalhost(data) {
   }
 }
 
-// Background fetching directly from service worker gets blocked by Cloudflare (403)
-// Instead, we find an open claude.ai tab and ask it to fetch the usage for us.
-async function fetchAndPostUsage() {
-  console.log("[ClaudeUsage] background fetch alarm triggered...");
-  chrome.tabs.query({ url: "https://claude.ai/*" }, (tabs) => {
-    if (tabs && tabs.length > 0) {
-      console.log("[ClaudeUsage] found claude.ai tab, delegating fetch to tab ID:", tabs[0].id);
-      chrome.tabs.sendMessage(tabs[0].id, { type: "fetch_usage" });
-    } else {
-      console.log("[ClaudeUsage] no claude.ai tabs open, cannot update usage.");
-    }
+async function setSpoofRules() {
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [1],
+    addRules: [{
+      id: 1,
+      priority: 1,
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "origin", operation: "remove" },
+          { header: "referer", operation: "set", value: "https://claude.ai/" },
+          { header: "sec-fetch-site", operation: "set", value: "same-origin" },
+          { header: "sec-fetch-mode", operation: "set", value: "cors" },
+          { header: "sec-fetch-dest", operation: "set", value: "empty" }
+        ]
+      },
+      condition: { urlFilter: `*claude.ai/api/organizations/*/usage`, resourceTypes: ["xmlhttprequest", "other"] }
+    }]
   });
 }
 
-// 1. Listen for messages from content.js (for instant updates if user is actively browsing claude.ai)
+async function fetchAndPostUsage() {
+  console.log("[ClaudeUsage] background fetch alarm triggered...");
+  await setSpoofRules();
+  
+  try {
+    const r = await fetch(`https://claude.ai/api/organizations/${ORG_ID}/usage`, {
+      credentials: "include",
+      headers: {
+        "anthropic-client-platform": "web_claude_ai",
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "sec-ch-ua": `"Chromium";v="130", "Microsoft Edge";v="130", "Not?A_Brand";v="99"`,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": `"Windows"`
+      }
+    });
+    console.log("[ClaudeUsage] background fetch status:", r.status);
+    if (!r.ok) return;
+    const data = await r.json();
+    await postToLocalhost(data);
+  } catch (e) {
+    console.log("[ClaudeUsage] error:", e.message);
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "usage") {
-    console.log("[ClaudeUsage] message received from content script, posting...");
-    postToLocalhost(msg.data);
-  }
+  if (msg.type === "usage") postToLocalhost(msg.data);
 });
 
-// 2. Set up alarms to run in the background (even when minimized or tabs sleep)
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "fetchUsageAlarm") {
-    console.log("[ClaudeUsage] background alarm fired");
-    fetchAndPostUsage();
-  }
+  if (alarm.name === "fetchUsageAlarm") fetchAndPostUsage();
 });
 
-// Create alarm on extension install/update
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 5 });
-  console.log("[ClaudeUsage] alarm created on install");
   fetchAndPostUsage();
 });
 
-// Create alarm on startup
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 5 });
-  console.log("[ClaudeUsage] alarm created on startup");
   fetchAndPostUsage();
 });
