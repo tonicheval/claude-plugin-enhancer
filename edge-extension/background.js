@@ -14,7 +14,16 @@ async function postToLocalhost(data) {
   }
 }
 
-async function setSpoofRules() {
+async function getCookiesString() {
+  return new Promise((resolve) => {
+    chrome.cookies.getAll({ domain: "claude.ai" }, (cookies) => {
+      if (!cookies || cookies.length === 0) return resolve("");
+      resolve(cookies.map(c => `${c.name}=${c.value}`).join("; "));
+    });
+  });
+}
+
+async function setSpoofRules(cookieStr) {
   await chrome.declarativeNetRequest.updateSessionRules({
     removeRuleIds: [1],
     addRules: [{
@@ -23,6 +32,7 @@ async function setSpoofRules() {
       action: {
         type: "modifyHeaders",
         requestHeaders: [
+          { header: "cookie", operation: "set", value: cookieStr },
           { header: "origin", operation: "remove" },
           { header: "referer", operation: "set", value: "https://claude.ai/" },
           { header: "sec-fetch-site", operation: "set", value: "same-origin" },
@@ -37,11 +47,17 @@ async function setSpoofRules() {
 
 async function fetchAndPostUsage() {
   console.log("[ClaudeUsage] background fetch alarm triggered...");
-  await setSpoofRules();
+  const cookieStr = await getCookiesString();
+  if (!cookieStr) {
+    console.log("[ClaudeUsage] No cookies found!");
+    return;
+  }
+  
+  await setSpoofRules(cookieStr);
   
   try {
     const r = await fetch(`https://claude.ai/api/organizations/${ORG_ID}/usage`, {
-      credentials: "include",
+      credentials: "omit", // We manually inject cookies via DNR
       headers: {
         "anthropic-client-platform": "web_claude_ai",
         "accept": "*/*",
