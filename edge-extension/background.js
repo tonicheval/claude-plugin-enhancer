@@ -14,57 +14,47 @@ async function postToLocalhost(data) {
   }
 }
 
-async function getCookiesString() {
-  return new Promise((resolve) => {
-    chrome.cookies.getAll({ domain: "claude.ai" }, (cookies) => {
-      if (!cookies || cookies.length === 0) return resolve("");
-      resolve(cookies.map(c => `${c.name}=${c.value}`).join("; "));
-    });
-  });
-}
+// Find or create a claude.ai tab for fetching (only way to bypass Cloudflare)
+async function ensureClaudeTab() {
+  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+  if (tabs && tabs.length > 0) return tabs[0].id;
 
-let creatingOffscreen = null;
-async function ensureOffscreen() {
-  const existing = await chrome.offscreen.hasDocument();
-  if (existing) return;
-  if (creatingOffscreen) { await creatingOffscreen; return; }
-  creatingOffscreen = chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["DOM_SCRAPING"],
-    justification: "Fetch claude.ai usage data in background"
+  // No claude.ai tab exists - create one in a minimized window
+  const win = await chrome.windows.create({
+    url: "https://claude.ai/",
+    state: "minimized",
+    focused: false
   });
-  await creatingOffscreen;
-  creatingOffscreen = null;
+  // Return the tab ID from the new window
+  return win.tabs[0].id;
 }
 
 async function fetchAndPostUsage() {
   console.log("[ClaudeUsage] alarm triggered...");
-  const cookieStr = await getCookiesString();
-  if (!cookieStr) {
-    console.log("[ClaudeUsage] No cookies found!");
-    return;
-  }
-  console.log("[ClaudeUsage] Got cookies, creating offscreen document...");
+  try {
+    const tabId = await ensureClaudeTab();
+    console.log("[ClaudeUsage] Using tab:", tabId);
 
-  await ensureOffscreen();
+    // Wait a moment for the page to load if it was just created
+    await new Promise(r => setTimeout(r, 3000));
 
-  const result = await chrome.runtime.sendMessage({
-    type: "fetch_usage_offscreen",
-    orgId: ORG_ID,
-    cookieStr: cookieStr
-  });
-
-  if (result && result.data) {
-    console.log("[ClaudeUsage] Offscreen fetch succeeded!");
-    await postToLocalhost(result.data);
-  } else {
-    console.log("[ClaudeUsage] Offscreen fetch failed:", result?.error);
+    // Send fetch command to the content script in that tab
+    chrome.tabs.sendMessage(tabId, { type: "fetch_usage" }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.log("[ClaudeUsage] Tab not ready yet:", chrome.runtime.lastError.message);
+      }
+    });
+  } catch (e) {
+    console.log("[ClaudeUsage] error:", e.message);
   }
 }
 
-// Also accept direct usage data from content script (when user is on claude.ai)
+// Receive usage data from content script
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "usage") postToLocalhost(msg.data);
+  if (msg.type === "usage") {
+    console.log("[ClaudeUsage] Received usage data from content script!");
+    postToLocalhost(msg.data);
+  }
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -73,10 +63,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 5 });
-  fetchAndPostUsage();
+  // Delay first fetch to let things settle
+  setTimeout(fetchAndPostUsage, 5000);
 });
 
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 5 });
-  fetchAndPostUsage();
+  setTimeout(fetchAndPostUsage, 5000);
 });
