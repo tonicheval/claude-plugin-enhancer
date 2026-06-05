@@ -3,7 +3,7 @@
   "name": "Claude Plugin Enhancer",
   "version": "2.0",
   "description": "Sends claude.ai usage data to the Claude extension status bar (Standardized Enhancer)",
-  "permissions": ["alarms", "cookies", "declarativeNetRequest", "declarativeNetRequestFeedback"],
+  "permissions": ["alarms", "cookies", "declarativeNetRequest", "declarativeNetRequestFeedback", "tabs"],
   "host_permissions": ["https://claude.ai/*", "http://localhost/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [{
