@@ -15,117 +15,18 @@ async function postToLocalhost(data) {
   }
 }
 
-// Helper to set cookie headers dynamically using declarativeNetRequest session rules
-async function setCookieRule(cookieString) {
-  const ruleId = 1;
-  const rule = {
-    id: ruleId,
-    priority: 1,
-    action: {
-      type: "modifyHeaders",
-      requestHeaders: [
-        {
-          header: "cookie",
-          operation: "set",
-          value: cookieString
-        },
-        {
-          header: "origin",
-          operation: "set",
-          value: "https://claude.ai"
-        },
-        {
-          header: "referer",
-          operation: "set",
-          value: "https://claude.ai/"
-        },
-        {
-          header: "sec-fetch-site",
-          operation: "set",
-          value: "same-origin"
-        }
-      ]
-    },
-    condition: {
-      urlFilter: `*claude.ai/api/organizations/*/usage`,
-      resourceTypes: ["xmlhttprequest", "other"]
-    }
-  };
-
-  try {
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [ruleId],
-      addRules: [rule]
-    });
-    console.log("[ClaudeUsage] declarativeNetRequest rule set successfully");
-  } catch (e) {
-    console.error("[ClaudeUsage] failed to set declarativeNetRequest rule:", e.message);
-  }
-}
-
-if (chrome.declarativeNetRequest.onRuleMatchedDebug) {
-  chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((info) => {
-    console.log("[ClaudeUsage] Rule matched debug:", info);
-  });
-}
-
-async function removeCookieRule() {
-  const ruleId = 1;
-  try {
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [ruleId]
-    });
-    console.log("[ClaudeUsage] declarativeNetRequest rule removed successfully");
-  } catch (e) {
-    console.error("[ClaudeUsage] failed to remove declarativeNetRequest rule:", e.message);
-  }
-}
-
-async function getCookiesString() {
-  return new Promise((resolve) => {
-    chrome.cookies.getAll({ domain: "claude.ai" }, (cookies) => {
-      if (!cookies || cookies.length === 0) {
-        console.log("[ClaudeUsage] chrome.cookies.getAll returned 0 cookies");
-        resolve("");
-        return;
-      }
-      const names = cookies.map(c => c.name);
-      console.log("[ClaudeUsage] Retrieved cookies:", names.join(", "));
-      const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join("; ");
-      resolve(cookieStr);
-    });
-  });
-}
-
-// Background fetching directly from service worker
+// Background fetching directly from service worker gets blocked by Cloudflare (403)
+// Instead, we find an open claude.ai tab and ask it to fetch the usage for us.
 async function fetchAndPostUsage() {
-  console.log("[ClaudeUsage] background fetching starting...");
-  try {
-    const cookieStr = await getCookiesString();
-    if (cookieStr) {
-      await setCookieRule(cookieStr);
+  console.log("[ClaudeUsage] background fetch alarm triggered...");
+  chrome.tabs.query({ url: "https://claude.ai/*" }, (tabs) => {
+    if (tabs && tabs.length > 0) {
+      console.log("[ClaudeUsage] found claude.ai tab, delegating fetch to tab ID:", tabs[0].id);
+      chrome.tabs.sendMessage(tabs[0].id, { type: "fetch_usage" });
     } else {
-      console.log("[ClaudeUsage] No cookies found for claude.ai");
+      console.log("[ClaudeUsage] no claude.ai tabs open, cannot update usage.");
     }
-
-    const r = await fetch(`https://claude.ai/api/organizations/${ORG_ID}/usage`, {
-      credentials: "include",
-      headers: { "anthropic-client-platform": "web_claude_ai" }
-    });
-    console.log("[ClaudeUsage] background fetch status:", r.status);
-    
-    if (cookieStr) {
-      await removeCookieRule();
-    }
-
-    if (!r.ok) return;
-    const data = await r.json();
-    console.log("[ClaudeUsage] background fetched successfully, posting...");
-    await postToLocalhost(data);
-  } catch (e) {
-    console.log("[ClaudeUsage] background fetch error:", e.message);
-    await removeCookieRule();
-  }
+  });
 }
 
 // 1. Listen for messages from content.js (for instant updates if user is actively browsing claude.ai)

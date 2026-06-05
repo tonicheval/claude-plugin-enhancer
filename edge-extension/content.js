@@ -17,3 +17,10 @@ async function fetchUsage() {
 
 fetchUsage();
 setInterval(fetchUsage, 5 * 60 * 1000);
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === "fetch_usage") {
+    console.log("[ClaudeUsage] received fetch_usage command from background");
+    fetchUsage();
+  }
+});
