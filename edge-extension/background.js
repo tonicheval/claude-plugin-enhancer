@@ -4,6 +4,24 @@ const ORG_ID = "{{ORG_ID}}";
 // Track windows we created so we can auto-close them after fetch
 const autoCreatedWindows = new Set();
 
+// Check if Void Editor's status bar server is currently running
+async function isVoidRunning() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1000);
+    
+    // Quick ping to localhost. If it connects, the server is running.
+    await fetch(`http://localhost:${PORT}/usage`, {
+      method: "HEAD",
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return true;
+  } catch (e) {
+    return false; // Connection refused or timed out means Void is closed
+  }
+}
+
 async function postToLocalhost(data) {
   try {
     const r = await fetch(`http://localhost:${PORT}/usage`, {
@@ -49,6 +67,13 @@ async function ensureClaudeTab() {
 async function fetchAndPostUsage() {
   console.log("[ClaudeUsage] alarm triggered...");
   try {
+    // Only fetch if Void is actively running
+    const running = await isVoidRunning();
+    if (!running) {
+      console.log("[ClaudeUsage] Void is not running. Skipping fetch.");
+      return;
+    }
+
     const { tabId } = await ensureClaudeTab();
     console.log("[ClaudeUsage] Using tab:", tabId);
 
@@ -92,12 +117,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 5 });
+  chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 2 });
   // Delay first fetch to let things settle
   setTimeout(fetchAndPostUsage, 5000);
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 5 });
+  chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 2 });
   setTimeout(fetchAndPostUsage, 5000);
 });
