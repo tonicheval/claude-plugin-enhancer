@@ -1,15 +1,9 @@
 const PORT = 54321;
 const ORG_ID = "{{ORG_ID}}";
 
-// Track windows we created so we can auto-close them after fetch
-const autoCreatedWindows = new Set();
-
 // Check if Void Editor's status bar server is currently running
 async function isVoidRunning() {
   try {
-    // We use no-cors to prevent the browser from blocking the check due to CORS.
-    // We do not use a short setTimeout because connection refusal on localhost is instant,
-    // and background CPU throttling can trigger short timeouts prematurely.
     await fetch(`http://localhost:${PORT}/usage`, {
       method: "HEAD",
       mode: "no-cors",
@@ -17,8 +11,8 @@ async function isVoidRunning() {
     });
     return true;
   } catch (e) {
-    console.log("[ClaudeUsage] isVoidRunning check failed:", e.message);
-    return false; // Connection refused means Void is closed
+    console.log("[ClaudeUsage] Void not running:", e.message);
+    return false;
   }
 }
 
@@ -35,98 +29,143 @@ async function postToLocalhost(data) {
   }
 }
 
-// Find or create a claude.ai tab for fetching (only way to bypass Cloudflare)
-async function ensureClaudeTab() {
-  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
-  if (tabs && tabs.length > 0) return { tabId: tabs[0].id, autoCreated: false };
+// Wait for a tab to finish loading (resolves when status === "complete")
+function waitForTabLoad(tabId, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("Tab load timeout"));
+    }, timeoutMs);
 
-  // No claude.ai tab exists - create one in an off-screen window to prevent visible flashing
-  const win = await chrome.windows.create({
-    url: "https://claude.ai/",
-    state: "normal",
-    left: -3000,
-    top: -3000,
-    width: 200,
-    height: 200,
-    focused: false
-  });
-
-  const windowId = win.id;
-  const tabId = win.tabs[0].id;
-  autoCreatedWindows.add(windowId);
-
-  // Safety timeout: close the window after 15s no matter what
-  // (prevents windows stacking up if fetch fails or user is logged out)
-  setTimeout(() => {
-    if (autoCreatedWindows.has(windowId)) {
-      autoCreatedWindows.delete(windowId);
-      chrome.windows.remove(windowId).catch(() => {});
-      console.log("[ClaudeUsage] Safety timeout - closed window", windowId);
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
     }
-  }, 15000);
+    chrome.tabs.onUpdated.addListener(listener);
 
-  return { tabId, autoCreated: true, windowId };
+    // Check if already complete
+    chrome.tabs.get(tabId, (tab) => {
+      if (tab && tab.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    });
+  });
+}
+
+// The actual usage-fetching logic, injected directly into a claude.ai tab.
+// This avoids all content-script messaging issues.
+function injectedFetchUsage(orgId) {
+  return fetch(`https://claude.ai/api/organizations/${orgId}/usage`, {
+    credentials: "include",
+    headers: { "anthropic-client-platform": "web_claude_ai" }
+  })
+    .then(r => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
 }
 
 async function fetchAndPostUsage() {
-  console.log("[ClaudeUsage] alarm triggered...");
+  console.log("[ClaudeUsage] === alarm triggered ===");
+
   try {
-    // Only fetch if Void is actively running
+    // Step 1: Check if Void is running
     const running = await isVoidRunning();
     if (!running) {
-      console.log("[ClaudeUsage] Void is not running. Skipping fetch.");
+      console.log("[ClaudeUsage] Void not running, skipping.");
       return;
     }
+    console.log("[ClaudeUsage] Void is running!");
 
-    const { tabId } = await ensureClaudeTab();
-    console.log("[ClaudeUsage] Using tab:", tabId);
+    // Step 2: Find an existing claude.ai tab, or create one off-screen
+    let tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+    let tabId;
+    let windowId = null;
 
-    // Wait a moment for the page to load if it was just created
-    await new Promise(r => setTimeout(r, 3000));
+    if (tabs && tabs.length > 0) {
+      tabId = tabs[0].id;
+      console.log("[ClaudeUsage] Reusing existing tab:", tabId);
+    } else {
+      console.log("[ClaudeUsage] No claude.ai tab, creating off-screen...");
+      const win = await chrome.windows.create({
+        url: "https://claude.ai/",
+        state: "normal",
+        left: -3000,
+        top: -3000,
+        width: 200,
+        height: 200,
+        focused: false
+      });
+      tabId = win.tabs[0].id;
+      windowId = win.id;
+      console.log("[ClaudeUsage] Created tab:", tabId, "in window:", windowId);
+    }
 
-    // Send fetch command to the content script in that tab
-    chrome.tabs.sendMessage(tabId, { type: "fetch_usage" }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.log("[ClaudeUsage] Tab not ready yet:", chrome.runtime.lastError.message);
-      }
+    // Step 3: Wait for the tab to be fully loaded
+    await waitForTabLoad(tabId);
+    console.log("[ClaudeUsage] Tab loaded, injecting script...");
+
+    // Step 4: Inject the fetch directly using chrome.scripting.executeScript
+    // This is FAR more reliable than sendMessage to a content script.
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: injectedFetchUsage,
+      args: [ORG_ID],
+      world: "MAIN" // Run in the page's context so credentials: "include" works
     });
+
+    if (results && results[0] && results[0].result) {
+      const data = results[0].result;
+      console.log("[ClaudeUsage] Got usage data! Posting to localhost...");
+      await postToLocalhost(data);
+      console.log("[ClaudeUsage] === Success! ===");
+    } else {
+      console.log("[ClaudeUsage] No data returned from inject. Results:", JSON.stringify(results));
+    }
+
+    // Step 5: Clean up the off-screen window if we created one
+    if (windowId) {
+      setTimeout(() => {
+        chrome.windows.remove(windowId).catch(() => {});
+        console.log("[ClaudeUsage] Cleaned up window:", windowId);
+      }, 2000);
+    }
+
   } catch (e) {
-    console.log("[ClaudeUsage] error:", e.message);
+    console.log("[ClaudeUsage] Error:", e.message);
   }
 }
 
-// Receive usage data from content script
+// Also still accept data from content script (for when user has claude.ai open)
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "usage") {
-    console.log("[ClaudeUsage] Received usage data from content script!");
+    console.log("[ClaudeUsage] Received usage data from content script");
     postToLocalhost(msg.data);
-
-    // Auto-close the window if we created it
-    if (sender.tab && sender.tab.windowId) {
-      const wid = sender.tab.windowId;
-      if (autoCreatedWindows.has(wid)) {
-        autoCreatedWindows.delete(wid);
-        // Small delay to let POST finish
-        setTimeout(() => {
-          chrome.windows.remove(wid).catch(() => {});
-          console.log("[ClaudeUsage] Auto-closed window", wid);
-        }, 1000);
-      }
-    }
   }
 });
 
+// Alarm handler
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "fetchUsageAlarm") fetchAndPostUsage();
+  if (alarm.name === "fetchUsageAlarm") {
+    fetchAndPostUsage();
+  }
 });
 
+// Setup alarm on install
 chrome.runtime.onInstalled.addListener(() => {
+  console.log("[ClaudeUsage] Extension installed/updated");
   chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 2 });
-  // Delay first fetch to let things settle
   setTimeout(fetchAndPostUsage, 5000);
 });
 
+// Setup alarm on browser startup
 chrome.runtime.onStartup.addListener(() => {
+  console.log("[ClaudeUsage] Browser started");
   chrome.alarms.create("fetchUsageAlarm", { periodInMinutes: 2 });
   setTimeout(fetchAndPostUsage, 5000);
 });
