@@ -1,6 +1,9 @@
 const PORT = 54321;
 const ORG_ID = "{{ORG_ID}}";
 
+// Track windows we created so we can auto-close them after fetch
+const autoCreatedWindows = new Set();
+
 async function postToLocalhost(data) {
   try {
     const r = await fetch(`http://localhost:${PORT}/usage`, {
@@ -17,7 +20,7 @@ async function postToLocalhost(data) {
 // Find or create a claude.ai tab for fetching (only way to bypass Cloudflare)
 async function ensureClaudeTab() {
   const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
-  if (tabs && tabs.length > 0) return tabs[0].id;
+  if (tabs && tabs.length > 0) return { tabId: tabs[0].id, autoCreated: false };
 
   // No claude.ai tab exists - create one in a minimized window
   const win = await chrome.windows.create({
@@ -25,14 +28,28 @@ async function ensureClaudeTab() {
     state: "minimized",
     focused: false
   });
-  // Return the tab ID from the new window
-  return win.tabs[0].id;
+
+  const windowId = win.id;
+  const tabId = win.tabs[0].id;
+  autoCreatedWindows.add(windowId);
+
+  // Safety timeout: close the window after 15s no matter what
+  // (prevents windows stacking up if fetch fails or user is logged out)
+  setTimeout(() => {
+    if (autoCreatedWindows.has(windowId)) {
+      autoCreatedWindows.delete(windowId);
+      chrome.windows.remove(windowId).catch(() => {});
+      console.log("[ClaudeUsage] Safety timeout - closed window", windowId);
+    }
+  }, 15000);
+
+  return { tabId, autoCreated: true, windowId };
 }
 
 async function fetchAndPostUsage() {
   console.log("[ClaudeUsage] alarm triggered...");
   try {
-    const tabId = await ensureClaudeTab();
+    const { tabId } = await ensureClaudeTab();
     console.log("[ClaudeUsage] Using tab:", tabId);
 
     // Wait a moment for the page to load if it was just created
@@ -50,10 +67,23 @@ async function fetchAndPostUsage() {
 }
 
 // Receive usage data from content script
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "usage") {
     console.log("[ClaudeUsage] Received usage data from content script!");
     postToLocalhost(msg.data);
+
+    // Auto-close the window if we created it
+    if (sender.tab && sender.tab.windowId) {
+      const wid = sender.tab.windowId;
+      if (autoCreatedWindows.has(wid)) {
+        autoCreatedWindows.delete(wid);
+        // Small delay to let POST finish
+        setTimeout(() => {
+          chrome.windows.remove(wid).catch(() => {});
+          console.log("[ClaudeUsage] Auto-closed window", wid);
+        }, 1000);
+      }
+    }
   }
 });
 
