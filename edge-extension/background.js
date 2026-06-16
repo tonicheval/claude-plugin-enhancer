@@ -90,7 +90,8 @@ async function fetchAndPostUsage() {
       return;
     }
 
-    // TIER 1: Direct Fetch
+    /*
+    // TIER 1: Direct Fetch (Commented out as per user request)
     try {
       console.log("[ClaudeUsage] Attempting Tier 1: Direct Fetch...");
       const data = await directFetch();
@@ -102,30 +103,48 @@ async function fetchAndPostUsage() {
       console.log("[ClaudeUsage] Tier 1 Direct Fetch failed (e.g. Cloudflare):", e.message);
     }
 
-    // TIER 2 & 3: Tab Injection Fallback
-    console.log("[ClaudeUsage] Attempting Tier 2/3: Tab Injection Fallback...");
+    // TIER 2: Tab Injection Fallback (Commented out as per user request)
+    console.log("[ClaudeUsage] Attempting Tier 2: Tab Injection Fallback...");
     let tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+    if (tabs && tabs.length > 0) {
+      let tabId = tabs[0].id;
+      console.log("[ClaudeUsage] Tier 2: Reusing existing tab:", tabId);
+      
+      // Inject the fetch directly using chrome.scripting.executeScript
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: injectedFetchUsage,
+        args: [ORG_ID],
+        world: "MAIN" 
+      });
+
+      if (results && results[0] && results[0].result) {
+        const data = results[0].result;
+        console.log("[ClaudeUsage] Got usage data from tab! Posting to localhost...");
+        await postToLocalhost(data);
+        console.log("[ClaudeUsage] === Success! ===");
+        return;
+      }
+    }
+    */
+
+    // TIER 3: Visible Window Creation (Current method, modified to be visible)
+    console.log("[ClaudeUsage] Tier 3: Creating VISIBLE window to bypass occlusion throttling...");
     let tabId;
     let windowId = null;
-
-    if (tabs && tabs.length > 0) {
-      tabId = tabs[0].id;
-      console.log("[ClaudeUsage] Tier 2: Reusing existing tab:", tabId);
-    } else {
-      console.log("[ClaudeUsage] Tier 3: No tab found. Creating off-screen window as backup method...");
-      const win = await chrome.windows.create({
-        url: "https://claude.ai/",
-        state: "normal",
-        left: -3000,
-        top: -3000,
-        width: 200,
-        height: 200,
-        focused: false
-      });
-      tabId = win.tabs[0].id;
-      windowId = win.id;
-      console.log("[ClaudeUsage] Created backup tab:", tabId, "in window:", windowId);
-    }
+    
+    // Create a small but fully visible window to avoid Chromium throttling
+    const win = await chrome.windows.create({
+      url: "https://claude.ai/",
+      state: "normal",
+      // Positioned normally on-screen so it's not occluded
+      width: 400,
+      height: 400,
+      focused: true // Ensures it gets priority and loads instantly
+    });
+    tabId = win.tabs[0].id;
+    windowId = win.id;
+    console.log("[ClaudeUsage] Created visible tab:", tabId, "in window:", windowId);
 
     // Wait for the tab to be fully loaded
     await waitForTabLoad(tabId);
@@ -148,12 +167,12 @@ async function fetchAndPostUsage() {
       console.log("[ClaudeUsage] No data returned from inject. Results:", JSON.stringify(results));
     }
 
-    // Clean up the off-screen window if we created one
+    // Clean up the window
     if (windowId) {
       setTimeout(() => {
         chrome.windows.remove(windowId).catch(() => {});
-        console.log("[ClaudeUsage] Cleaned up backup window:", windowId);
-      }, 2000);
+        console.log("[ClaudeUsage] Cleaned up visible window:", windowId);
+      }, 1000); // Quick cleanup
     }
 
   } catch (e) {
