@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Plugin Enhancer",
-  "version": "3.0",
+  "version": "3.4",
   "description": "Sends claude.ai usage data to the Claude extension status bar (Standardized Enhancer)",
   "permissions": ["alarms", "cookies", "tabs", "background", "scripting"],
   "host_permissions": ["https://claude.ai/*", "http://localhost/*"],
