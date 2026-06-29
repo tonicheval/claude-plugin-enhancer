@@ -84,10 +84,12 @@ async function fetchAndPostUsage() {
     let createdWindowId = null;
 
     // TIER 1: Use an existing window if possible (Silent background tab)
-    let windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    let windows = await chrome.windows.getAll();
     if (windows && windows.length > 0) {
-      const targetWindowId = windows[0].id;
-      console.log("[ClaudeUsage] Phase 1: Found existing window. Creating background tab in window", targetWindowId);
+      // Prefer a normal window if one exists, otherwise just use whatever window is open
+      const targetWindow = windows.find(w => w.type === 'normal') || windows[0];
+      const targetWindowId = targetWindow.id;
+      console.log("[ClaudeUsage] Phase 1: Found existing window (type: " + targetWindow.type + "). Creating background tab in window", targetWindowId);
       
       const tab = await chrome.tabs.create({
         windowId: targetWindowId,
