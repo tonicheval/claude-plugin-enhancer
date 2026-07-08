@@ -72,6 +72,9 @@ function injectedFetchUsage(orgId) {
 async function fetchAndPostUsage() {
   console.log("[ClaudeUsage] === alarm triggered ===");
 
+  let createdTabId = null;
+  let createdWindowId = null;
+
   try {
     // Check if Void is running
     const running = await isVoidRunning();
@@ -80,45 +83,59 @@ async function fetchAndPostUsage() {
       return;
     }
 
-    let createdTabId = null;
-    let createdWindowId = null;
+    let targetTabId = null;
+    let needsToWait = false;
 
-    // TIER 1: Use an existing window if possible (Silent background tab)
-    let windows = await chrome.windows.getAll();
-    if (windows && windows.length > 0) {
-      // Prefer a normal window if one exists, otherwise just use whatever window is open
-      const targetWindow = windows.find(w => w.type === 'normal') || windows[0];
-      const targetWindowId = targetWindow.id;
-      console.log("[ClaudeUsage] Phase 1: Found existing window (type: " + targetWindow.type + "). Creating background tab in window", targetWindowId);
-      
-      const tab = await chrome.tabs.create({
-        windowId: targetWindowId,
-        url: "https://claude.ai/",
-        active: false // MUST be false so it doesn't switch Virtual Desktops or steal focus
-      });
-      createdTabId = tab.id;
+    // TIER 1: Use an EXISTING claude.ai tab if you already have one open
+    let claudeTabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+    if (claudeTabs && claudeTabs.length > 0) {
+      targetTabId = claudeTabs[0].id;
+      console.log("[ClaudeUsage] Phase 1: Reusing existing claude.ai tab:", targetTabId);
     } 
-    // TIER 2: No windows exist, create a new visible window
     else {
-      console.log("[ClaudeUsage] Phase 2: No windows open. Creating new visible window...");
-      const win = await chrome.windows.create({
-        url: "https://claude.ai/",
-        state: "normal",
-        width: 400,
-        height: 400,
-        focused: true
-      });
-      createdTabId = win.tabs[0].id;
-      createdWindowId = win.id;
+      // TIER 2: Create a background tab in an existing window
+      let windows = await chrome.windows.getAll();
+      if (windows && windows.length > 0) {
+        const targetWindow = windows.find(w => w.type === 'normal') || windows[0];
+        console.log("[ClaudeUsage] Phase 2: No claude.ai tab found. Creating background tab in window", targetWindow.id);
+        
+        const tab = await chrome.tabs.create({
+          windowId: targetWindow.id,
+          url: "https://claude.ai/",
+          active: false // MUST be false
+        });
+        createdTabId = tab.id;
+        targetTabId = tab.id;
+        needsToWait = true;
+      } 
+      // TIER 3: No windows exist, create a new visible window
+      else {
+        console.log("[ClaudeUsage] Phase 3: No windows open at all. Creating new visible window...");
+        const win = await chrome.windows.create({
+          url: "https://claude.ai/",
+          state: "normal",
+          width: 400,
+          height: 400,
+          focused: true
+        });
+        createdTabId = win.tabs[0].id;
+        createdWindowId = win.id;
+        targetTabId = win.tabs[0].id;
+        needsToWait = true;
+      }
     }
 
-    // Wait for the tab to be fully loaded
-    await waitForTabLoad(createdTabId);
-    console.log("[ClaudeUsage] Tab loaded, injecting script...");
+    // Wait for the newly created tab to load (if we created one)
+    if (needsToWait) {
+      console.log("[ClaudeUsage] Waiting for new tab to load...");
+      await waitForTabLoad(targetTabId);
+      console.log("[ClaudeUsage] Tab loaded.");
+    }
 
+    console.log("[ClaudeUsage] Injecting fetch script...");
     // Inject the fetch directly using chrome.scripting.executeScript
     const results = await chrome.scripting.executeScript({
-      target: { tabId: createdTabId },
+      target: { tabId: targetTabId },
       func: injectedFetchUsage,
       args: [ORG_ID],
       world: "MAIN" 
@@ -133,7 +150,11 @@ async function fetchAndPostUsage() {
       console.log("[ClaudeUsage] No data returned from inject. Results:", JSON.stringify(results));
     }
 
-    // Clean up
+  } catch (e) {
+    console.log("[ClaudeUsage] Error:", e.message);
+  } finally {
+    // CRITICAL: Cleanup MUST happen in the finally block so it ALWAYS runs
+    // even if Cloudflare blocks the request or the tab times out!
     setTimeout(() => {
       if (createdWindowId) {
         chrome.windows.remove(createdWindowId).catch(() => {});
@@ -143,9 +164,6 @@ async function fetchAndPostUsage() {
         console.log("[ClaudeUsage] Cleaned up background tab:", createdTabId);
       }
     }, 1000); // Quick cleanup
-
-  } catch (e) {
-    console.log("[ClaudeUsage] Error:", e.message);
   }
 }
 
