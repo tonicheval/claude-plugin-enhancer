@@ -83,20 +83,42 @@ async function fetchAndPostUsage() {
       return;
     }
 
-    let targetTabId = null;
-    let needsToWait = false;
+    let phase1Success = false;
 
     // TIER 1: Use an EXISTING claude.ai tab if you already have one open AND it's not sleeping
     let claudeTabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
     let activeClaudeTabs = claudeTabs.filter(t => !t.discarded);
 
     if (activeClaudeTabs && activeClaudeTabs.length > 0) {
-      targetTabId = activeClaudeTabs[0].id;
-      console.log("[ClaudeUsage] Phase 1: Reusing existing active claude.ai tab:", targetTabId);
-    } 
-    else {
-      // TIER 2: No active claude.ai tab exists, create a new visible window
-      console.log("[ClaudeUsage] Phase 2: No active claude tabs open (or they are sleeping). Creating new visible window...");
+      const targetTabId = activeClaudeTabs[0].id;
+      console.log("[ClaudeUsage] Phase 1: Attempting to reuse existing tab:", targetTabId);
+      
+      try {
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
+        const scriptPromise = chrome.scripting.executeScript({
+          target: { tabId: targetTabId },
+          func: injectedFetchUsage,
+          args: [ORG_ID],
+          world: "MAIN" 
+        });
+
+        const results = await Promise.race([scriptPromise, timeoutPromise]);
+        
+        if (results && results[0] && results[0].result) {
+          console.log("[ClaudeUsage] Phase 1 Success! Got usage data.");
+          await postToLocalhost(results[0].result);
+          phase1Success = true;
+        } else {
+          console.log("[ClaudeUsage] Phase 1 returned no data.");
+        }
+      } catch (err) {
+        console.log("[ClaudeUsage] Phase 1 Failed (tab frozen or error):", err.message);
+      }
+    }
+
+    // TIER 2: If Phase 1 failed or no active tabs exist, create a new visible window
+    if (!phase1Success) {
+      console.log("[ClaudeUsage] Phase 2: Creating new visible window as fallback...");
       const win = await chrome.windows.create({
         url: "https://claude.ai/",
         state: "normal",
@@ -106,44 +128,30 @@ async function fetchAndPostUsage() {
       });
       createdTabId = win.tabs[0].id;
       createdWindowId = win.id;
-      targetTabId = win.tabs[0].id;
-      needsToWait = true;
-    }
-
-    // Wait for the newly created tab to load (if we created one)
-    if (needsToWait) {
+      
       console.log("[ClaudeUsage] Waiting for new tab to load...");
-      await waitForTabLoad(targetTabId);
-      console.log("[ClaudeUsage] Tab loaded.");
-    }
+      await waitForTabLoad(createdTabId);
+      console.log("[ClaudeUsage] Tab loaded. Injecting script...");
 
-    console.log("[ClaudeUsage] Injecting fetch script...");
-    
-    // Inject the fetch directly using chrome.scripting.executeScript, wrapped in a 10s timeout to prevent hanging
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Script injection timed out (tab might be frozen)")), 10000));
-    const scriptPromise = chrome.scripting.executeScript({
-      target: { tabId: targetTabId },
-      func: injectedFetchUsage,
-      args: [ORG_ID],
-      world: "MAIN" 
-    });
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: createdTabId },
+        func: injectedFetchUsage,
+        args: [ORG_ID],
+        world: "MAIN" 
+      });
 
-    const results = await Promise.race([scriptPromise, timeoutPromise]);
-
-    if (results && results[0] && results[0].result) {
-      const data = results[0].result;
-      console.log("[ClaudeUsage] Got usage data! Posting to localhost...");
-      await postToLocalhost(data);
-      console.log("[ClaudeUsage] === Success! ===");
-    } else {
-      console.log("[ClaudeUsage] No data returned from inject. Results:", JSON.stringify(results));
+      if (results && results[0] && results[0].result) {
+        console.log("[ClaudeUsage] Phase 2 Success! Got usage data.");
+        await postToLocalhost(results[0].result);
+      } else {
+        console.log("[ClaudeUsage] Phase 2 returned no data.");
+      }
     }
 
   } catch (e) {
-    console.log("[ClaudeUsage] Error:", e.message);
+    console.log("[ClaudeUsage] Unexpected Error:", e.message);
   } finally {
     // CRITICAL: Cleanup MUST happen in the finally block so it ALWAYS runs
-    // even if Cloudflare blocks the request or the tab times out!
     setTimeout(() => {
       if (createdWindowId) {
         chrome.windows.remove(createdWindowId).catch(() => {});
