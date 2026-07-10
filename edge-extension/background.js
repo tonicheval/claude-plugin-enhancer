@@ -86,15 +86,17 @@ async function fetchAndPostUsage() {
     let targetTabId = null;
     let needsToWait = false;
 
-    // TIER 1: Use an EXISTING claude.ai tab if you already have one open
+    // TIER 1: Use an EXISTING claude.ai tab if you already have one open AND it's not sleeping
     let claudeTabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
-    if (claudeTabs && claudeTabs.length > 0) {
-      targetTabId = claudeTabs[0].id;
-      console.log("[ClaudeUsage] Phase 1: Reusing existing claude.ai tab:", targetTabId);
+    let activeClaudeTabs = claudeTabs.filter(t => !t.discarded);
+
+    if (activeClaudeTabs && activeClaudeTabs.length > 0) {
+      targetTabId = activeClaudeTabs[0].id;
+      console.log("[ClaudeUsage] Phase 1: Reusing existing active claude.ai tab:", targetTabId);
     } 
     else {
-      // TIER 2: No claude.ai tab exists, create a new visible window
-      console.log("[ClaudeUsage] Phase 2: No claude tabs open. Creating new visible window...");
+      // TIER 2: No active claude.ai tab exists, create a new visible window
+      console.log("[ClaudeUsage] Phase 2: No active claude tabs open (or they are sleeping). Creating new visible window...");
       const win = await chrome.windows.create({
         url: "https://claude.ai/",
         state: "normal",
@@ -116,13 +118,17 @@ async function fetchAndPostUsage() {
     }
 
     console.log("[ClaudeUsage] Injecting fetch script...");
-    // Inject the fetch directly using chrome.scripting.executeScript
-    const results = await chrome.scripting.executeScript({
+    
+    // Inject the fetch directly using chrome.scripting.executeScript, wrapped in a 10s timeout to prevent hanging
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Script injection timed out (tab might be frozen)")), 10000));
+    const scriptPromise = chrome.scripting.executeScript({
       target: { tabId: targetTabId },
       func: injectedFetchUsage,
       args: [ORG_ID],
       world: "MAIN" 
     });
+
+    const results = await Promise.race([scriptPromise, timeoutPromise]);
 
     if (results && results[0] && results[0].result) {
       const data = results[0].result;
