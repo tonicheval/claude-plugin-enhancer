@@ -93,36 +93,19 @@ async function fetchAndPostUsage() {
       console.log("[ClaudeUsage] Phase 1: Reusing existing claude.ai tab:", targetTabId);
     } 
     else {
-      // TIER 2: Create a background tab in an existing window
-      let windows = await chrome.windows.getAll();
-      if (windows && windows.length > 0) {
-        const targetWindow = windows.find(w => w.type === 'normal') || windows[0];
-        console.log("[ClaudeUsage] Phase 2: No claude.ai tab found. Creating background tab in window", targetWindow.id);
-        
-        const tab = await chrome.tabs.create({
-          windowId: targetWindow.id,
-          url: "https://claude.ai/",
-          active: false // MUST be false
-        });
-        createdTabId = tab.id;
-        targetTabId = tab.id;
-        needsToWait = true;
-      } 
-      // TIER 3: No windows exist, create a new visible window
-      else {
-        console.log("[ClaudeUsage] Phase 3: No windows open at all. Creating new visible window...");
-        const win = await chrome.windows.create({
-          url: "https://claude.ai/",
-          state: "normal",
-          width: 400,
-          height: 400,
-          focused: true
-        });
-        createdTabId = win.tabs[0].id;
-        createdWindowId = win.id;
-        targetTabId = win.tabs[0].id;
-        needsToWait = true;
-      }
+      // TIER 2: No claude.ai tab exists, create a new visible window
+      console.log("[ClaudeUsage] Phase 2: No claude tabs open. Creating new visible window...");
+      const win = await chrome.windows.create({
+        url: "https://claude.ai/",
+        state: "normal",
+        width: 400,
+        height: 400,
+        focused: true
+      });
+      createdTabId = win.tabs[0].id;
+      createdWindowId = win.id;
+      targetTabId = win.tabs[0].id;
+      needsToWait = true;
     }
 
     // Wait for the newly created tab to load (if we created one)
