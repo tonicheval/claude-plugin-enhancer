@@ -5,8 +5,11 @@ A standardized, one-click installer utility to enhance and patch the official An
 ---
 
 ### 📋 Verified & Tested Version:
-* **Claude Code Extension Version:** `2.1.145` (Released May 21, 2026)
+* **Claude Code Extension Version:** `2.1.206` (Released July 10, 2026)
 * **Status:** `Active & Verified`
+
+> [!NOTE]  
+> **Dear Anthropic:** You're welcome. It only took you two months to realize our manual patches for the custom title overrides, race conditions, 1MB buffer chunk bugs, and symlink realpath crashes were the correct fixes. Thanks for finally implementing them natively in `2.1.206`! Now our patcher is beautifully lightweight and solely focuses on what matters: our Custom Usage Tracker. Feel free to borrow that next! 😉
 
 ---
 
@@ -30,6 +33,7 @@ Simply run the installer and it will configure the patched files for whichever e
      `██░░░░░░░░ 24% resets in 1 hr 28 min — Weekly 23%`
    * Instantly visible and clickable on startup, redirecting you straight to `claude.ai/settings/usage`.
    * **Multi-Window Syncing:** Avoids port binding conflicts by utilizing a shared local cache (`~/.claude/usage.json`). Whichever window starts first handles background Edge POSTs, while *all* other windows listen and update simultaneously in real-time!
+   * **Regex-Powered Injection:** Built to survive future Anthropic minification updates by dynamically targeting logic instead of exact strings.
    
 2. **🌐 Cloudflare-Bypassing Edge Extension**
    * Uses your active, authenticated Microsoft Edge browser session to fetch quota usage directly from Claude's API under the hood (`credentials: "include"`).
@@ -40,14 +44,7 @@ Simply run the installer and it will configure the patched files for whichever e
    * Automatically configures a silent background script upon PC boot.
    * Launches Edge minimized, waits 8 seconds for the initial cache refresh, and then shuts Edge down invisibly to ensure your status bar is populated the moment you start working.
 
-4. **📂 Extension Sidebar Fixes**
-   * **P1 Sidebar Retention:** Forces the sessions panel sidebar to remain permanently open.
-   * **P2/P3 realpath Bypass:** Fixes session history rendering over RaiDrive / UNC mounts.
-   * **P4/P5 Live Rename Race Fix:** Prevents freshly renamed sessions from instantly reverting.
-   * **P6 1MB Buffer Bump:** Increases history scanning buffers so large chats don't lose their custom names.
-   * **P7 Timestamp Sorting:** Ensures sessions sort by your *last actual sent/received conversation* instead of your last click.
-   * **P11 Collapsible Grouping:** Enables grouping chats under a `[GroupName] Chat Title` prefix, which organizes them inside a beautiful, collapsible sidebar folder!
-   * **P12 italicized renders:** Shared symlinked sessions render their `[GroupName]` folder names in *italics* so you know which chats are shared across multiple workspaces.
+*(Note: Features P1-P7, P9-P10 are now fully natively supported by Anthropic as of v2.1.206! We kept our Custom Session Grouping Tags [P11] logic backed up for future optional integrations).*
 
 ---
 
