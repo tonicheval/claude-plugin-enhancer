@@ -5,11 +5,12 @@ A standardized, one-click installer utility to enhance and patch the official An
 ---
 
 ### 📋 Verified & Tested Version:
-* **Claude Code Extension Version:** `2.1.206` (Released July 10, 2026)
+* **Claude Code Extension Version:** `2.1.220` (Released July 29, 2026)
 * **Status:** `Active & Verified`
 
 > [!NOTE]  
-> **Dear Anthropic:** You're welcome. It only took you two months to realize our manual patches for the custom title overrides, race conditions, 1MB buffer chunk bugs, and symlink realpath crashes were the correct fixes. Thanks for finally implementing them natively in `2.1.206`! Now our patcher is beautifully lightweight and solely focuses on what matters: our Custom Usage Tracker. Feel free to borrow that next! 😉
+> **Dear Anthropic:** You're welcome. It only took you two months to realize our manual patches for the custom title overrides, race conditions, and 1MB buffer chunk bugs were the correct fixes. 
+> But you STILL haven't figured out that Node's `fs.realpathSync()` catastrophically fails or appends slashes on UNC Network Shares (`\\server\share`). Thanks for forcing us to keep writing `P3` and `P3b` patches to bypass your buggy `Tse` and `Kie` realpath hashing logic! Feel free to borrow our fix for the next release. 😉
 
 ---
 

@@ -136,12 +136,25 @@ try {
 
         // P3: Extension realpathSync bypass (Network drive & hash fix for backend)
         let p3Found = false;
+        let p3FuncName = '';
         ejsContent = ejsContent.replace(/function ([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\)\{let [a-zA-Z0-9_$]+=([a-zA-Z0-9_$]+)\.resolve\([a-zA-Z0-9_$]+\?\?"\."\),[a-zA-Z0-9_$]+;try\{[a-zA-Z0-9_$]+=[a-zA-Z0-9_$]+\.realpathSync\([a-zA-Z0-9_$]+\)\}catch\{[a-zA-Z0-9_$]+=[a-zA-Z0-9_$]+\}return ([a-zA-Z0-9_$]+)\([a-zA-Z0-9_$]+\)\}/g, (match, funcName, argName, pathName, normalizeFuncName) => {
             p3Found = true;
+            p3FuncName = funcName;
             return `function ${funcName}(${argName}){return ${normalizeFuncName}(${pathName}.resolve(${argName}??"."))}`; 
         });
         if (p3Found) console.log(`      \x1b[32m✔ P3 (Backend realpath): Applied\x1b[0m`);
         else console.log(`      \x1b[31m✘ P3 (Backend realpath): Not found\x1b[0m`);
+
+        // P3_cwd: Normalize global cwd so listSessions and startSession hash match identically
+        let p3cwdFound = false;
+        if (p3FuncName) {
+            ejsContent = ejsContent.replace(/this\.cwd=([a-zA-Z0-9_$]+)(;|})/g, (match, p1, p2) => {
+                p3cwdFound = true;
+                return `this.cwd=typeof ${p3FuncName}==="function"?${p3FuncName}(${p1}):${p1}${p2}`;
+            });
+        }
+        if (p3cwdFound) console.log(`      \x1b[32m✔ P3_cwd (Normalize global cwd): Applied\x1b[0m`);
+        else console.log(`      \x1b[31m✘ P3_cwd (Normalize global cwd): Not found\x1b[0m`);
         
         // P3b: Kie() async realpath bypass (hangs on mapped/network drives when listing sessions)
         let p3bFound = false;
@@ -156,14 +169,16 @@ try {
         // P8: Advanced Multi-Window Usage status bar HTTP server
         const usageIIFE = '(()=>{const _http=require("http");const _fs=require("fs");const _os=require("os");const _path=require("path");const _cacheFile=_path.join(_os.homedir(),".claude","usage.json");const _wu=Se.window.createStatusBarItem(Se.StatusBarAlignment.Right,9);_wu.command="claude-vscode.openUsage";_wu.tooltip="Claude usage";_wu.text="$(graph) Claude usage";_wu.show();e.subscriptions.push(_wu);e.subscriptions.push(Se.commands.registerCommand("claude-vscode.openUsage",()=>{Se.env.openExternal(Se.Uri.parse("https://claude.ai/settings/usage"))}));function _fmtU(d){try{const p=Math.round(d.five_hour&&d.five_hour.utilization||0);const wk=Math.round(d.seven_day&&d.seven_day.utilization||0);let r="";if(d.five_hour&&d.five_hour.resets_at){const ms=new Date(d.five_hour.resets_at)-Date.now();if(ms>0){const h=Math.floor(ms/3600000);const m=Math.floor((ms%3600000)/60000);if(h>0){r=" resets in "+h+" hr "+m+" min"}else{r=" resets in "+m+" min"}}}const blocks=Math.round(p/10);const full="\\u2588".repeat(Math.min(10,blocks));const empty="\\u2591".repeat(Math.max(0,10-blocks));return full+empty+" "+p+"%"+r+" \\u2014 Weekly "+wk+"%"}catch{return"$(graph) Claude usage (err)"}}function _updateFromCache(){try{if(_fs.existsSync(_cacheFile)){const d=JSON.parse(_fs.readFileSync(_cacheFile,"utf8"));_wu.text=_fmtU(d)}}catch{}}_updateFromCache();try{_fs.watchFile(_cacheFile,{interval:2000},()=>{_updateFromCache()})}catch{}const _srv=_http.createServer((req,res)=>{if(req.method==="POST"&&req.url==="/usage"){let b="";req.on("data",c=>{b+=c});req.on("end",()=>{try{_fs.writeFileSync(_cacheFile,b,"utf8");_updateFromCache()}catch{}res.writeHead(200);res.end("ok")})}else{res.writeHead(404);res.end()}});_srv.on("error",(e)=>{});try{_srv.listen(54321,"127.0.0.1")}catch{}e.subscriptions.push({dispose:()=>{try{_srv.close()}catch{}try{_fs.unwatchFile(_cacheFile)}catch{}}});try{const {spawn}=require("child_process");spawn("powershell.exe",["-NoProfile","-ExecutionPolicy","Bypass","-File","C:\\\\\\\\Users\\\\\\\\SEO\\\\\\\\.claude\\\\\\\\projects\\\\\\\\sync-shared.ps1"],{detached:true,stdio:"ignore"}).unref()}catch(e){}})();';
         
-        ejsContent = applyRegex(ejsContent, /(let\s+[a-zA-Z0-9_$]+\s*=\s*[a-zA-Z0-9_$]+\.window\.createStatusBarItem\([a-zA-Z0-9_$]+\.StatusBarAlignment\.Right\);.*?)(if\([a-zA-Z0-9_$]+\.subscriptions\.push\([a-zA-Z0-9_$]+\.commands\.registerCommand\("claude-vscode\.sidebar\.open")/, `$1${usageIIFE}$2`, 'P8 (Status bar server)');
+        ejsContent = applyRegex(ejsContent, /(let\s+[a-zA-Z0-9_$]+\s*=\s*([a-zA-Z0-9_$]+)\.window\.createStatusBarItem\([a-zA-Z0-9_$]+\.StatusBarAlignment\.Right\);.*?)(if\([a-zA-Z0-9_$]+\.subscriptions\.push\([a-zA-Z0-9_$]+\.commands\.registerCommand\("claude-vscode\.sidebar\.open"[,)]+)/, (match, p1, vscodeVar, p2) => {
+            return `${p1}${usageIIFE.replace(/Se\./g, `${vscodeVar}.`)}${p2}`;
+        }, 'P8 (Status bar server)');
 
         
         // P11: Session grouping in sidebar
         let p11Found = false;
         wjsContent = wjsContent.replace(/([a-zA-Z0-9_$]+)\.map\(\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)=>\{let ([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)===([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)===([a-zA-Z0-9_$]+)\.sessionId\.value;return ([a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,\{ref:\([a-zA-Z0-9_$]+\)=>\{if\([a-zA-Z0-9_$]+\)[a-zA-Z0-9_$]+\.current\.set\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\}.+?currentCwd:[a-zA-Z0-9_$]+\},[a-zA-Z0-9_$]+\.sessionId\.value\?\?[a-zA-Z0-9_$]+\))\}\)/g, (match, arr, sessionVar, indexVar, isFocusedVar, idxCompare1, idxCompare2, isRenamingVar, renameCompare1, renameCompare2, itemCode) => {
             p11Found = true;
-            return `(()=>{let _gr={},_ug=[];${arr}.forEach((${sessionVar},${indexVar})=>{let _m=/^\\[([^\\]]+)\\]/.exec(typeof ${sessionVar}.summary==="string"?${sessionVar}.summary:${sessionVar}.summary?.value??"");if(_m)(_gr[_m[1]]=_gr[_m[1]]||[]).push({${sessionVar},${indexVar}});else _ug.push({${sessionVar},${indexVar}})});let _out=[];Object.keys(_gr).sort().forEach(_gn=>{_out.push(b("div",{key:"g_"+_gn,style:{fontWeight:"bold",padding:"4px 8px",cursor:"pointer",userSelect:"none"},onClick:(e)=>{let nx=e.currentTarget.nextSibling;nx.style.display=nx.style.display==="none"?"":"none"},children:"\\u25BE "+_gn}));_out.push(b("div",{key:"gc_"+_gn,style:{paddingLeft:"8px"},children:_gr[_gn].map(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;return ${itemCode}})}))});_ug.forEach(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;_out.push(${itemCode})});return _out})()`;
+            return `(()=>{let _gr={},_ug=[];${arr}.forEach((${sessionVar},${indexVar})=>{let _m=/^\\[([^\\]]+)\\]/.exec(typeof ${sessionVar}.summary==="string"?${sessionVar}.summary:${sessionVar}.summary?.value??"");if(_m)(_gr[_m[1]]=_gr[_m[1]]||[]).push({${sessionVar},${indexVar}});else _ug.push({${sessionVar},${indexVar}})});let _out=[];Object.keys(_gr).sort().forEach(_gn=>{_out.push(b("div",{key:"g_"+_gn,style:{fontWeight:"bold",padding:"4px 8px",cursor:"pointer",userSelect:"none"},onClick:(e)=>{let nx=e.currentTarget.nextSibling;nx.style.display=nx.style.display==="none"?"":"none"},children:"\\u25BE "+_gn+" ("+_gr[_gn].length+")"}));_out.push(b("div",{key:"gc_"+_gn,style:{paddingLeft:"8px"},children:_gr[_gn].map(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;return ${itemCode}})}))});_ug.forEach(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;_out.push(${itemCode})});return _out})()`;
         });
         if (p11Found) console.log(`      \x1b[32m✔ P11 (Session Grouping support): Applied\x1b[0m`);
         else console.log(`      \x1b[31m✘ P11 (Session Grouping support): Not found\x1b[0m`);
