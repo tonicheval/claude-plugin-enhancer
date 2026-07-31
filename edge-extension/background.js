@@ -1,5 +1,4 @@
 const PORT = 54321;
-const ORG_ID = "{{ORG_ID}}";
 
 // Check if Void Editor's status bar server is currently running
 async function isVoidRunning() {
@@ -58,14 +57,25 @@ function waitForTabLoad(tabId, timeoutMs = 20000) {
 }
 
 // The actual usage-fetching logic, injected directly into a claude.ai tab.
-function injectedFetchUsage(orgId) {
-  return fetch(`https://claude.ai/api/organizations/${orgId}/usage`, {
+function injectedFetchUsage() {
+  return fetch("https://claude.ai/api/organizations", {
     credentials: "include",
     headers: { "anthropic-client-platform": "web_claude_ai" }
   })
     .then(r => {
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!r.ok) throw new Error("HTTP " + r.status + " on /organizations");
       return r.json();
+    })
+    .then(orgs => {
+      if (!orgs || orgs.length === 0) throw new Error("No organizations found");
+      const orgId = orgs[0].uuid;
+      return fetch(`https://claude.ai/api/organizations/${orgId}/usage`, {
+        credentials: "include",
+        headers: { "anthropic-client-platform": "web_claude_ai" }
+      }).then(r => {
+        if (!r.ok) throw new Error("HTTP " + r.status + " on /usage");
+        return r.json().then(usage => ({ orgId, usage }));
+      });
     });
 }
 
@@ -98,7 +108,6 @@ async function fetchAndPostUsage() {
         const scriptPromise = chrome.scripting.executeScript({
           target: { tabId: targetTabId },
           func: injectedFetchUsage,
-          args: [ORG_ID],
           world: "MAIN" 
         });
 
@@ -136,7 +145,6 @@ async function fetchAndPostUsage() {
       const results = await chrome.scripting.executeScript({
         target: { tabId: createdTabId },
         func: injectedFetchUsage,
-        args: [ORG_ID],
         world: "MAIN" 
       });
 
