@@ -292,6 +292,25 @@ try {
     } else {
         console.log(`\n${BOLD}[5/7] Edge boot task: ${RESET}${YELLOW}skipped (retired - would taskkill all Edge windows)${RESET}`);
     }
+
+    // Deploy the shared-session sync script that the extension spawns on activation.
+    // The repo is its source of truth - ~/.claude/projects/ is not version controlled,
+    // so the only copy used to be the live one.
+    const syncSrc = path.join(__dirname, 'sync-shared.ps1');
+    const syncDest = path.join(homedir, '.claude', 'projects', 'sync-shared.ps1');
+    if (fs.existsSync(syncSrc)) {
+        const syncDestDir = path.dirname(syncDest);
+        if (!fs.existsSync(syncDestDir)) fs.mkdirSync(syncDestDir, { recursive: true });
+        const incoming = fs.readFileSync(syncSrc, 'utf8');
+        const current = fs.existsSync(syncDest) ? fs.readFileSync(syncDest, 'utf8') : null;
+        if (current === incoming) {
+            console.log(`  ${GREEN}✔ sync-shared.ps1 already current${RESET}`);
+        } else {
+            if (current !== null) fs.writeFileSync(`${syncDest}.bak`, current, 'utf8');
+            fs.writeFileSync(syncDest, incoming, 'utf8');
+            console.log(`  ${GREEN}✔ Deployed sync-shared.ps1${RESET}${current !== null ? ` ${YELLOW}(previous copy saved as sync-shared.ps1.bak)${RESET}` : ''}`);
+        }
+    }
     
     console.log(`\n${BOLD}[6/7] Protecting sessions from auto-cleanup...${RESET}`);
     const settingsPath = path.join(homedir, '.claude', 'settings.json');
