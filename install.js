@@ -193,10 +193,38 @@ try {
         else console.log(`      \x1b[31m✘ P11 (Session Grouping support): Not found\x1b[0m`);
 
         // P12 (ext): isShared symlink check
+        //
+        // Locate the "cwd -> ~/.claude/projects/<encoded>" helper in THIS build rather
+        // than hardcoding its minified name. That name is NOT stable across releases:
+        // it was EWe in 2.1.206, but in 2.1.220 EWe is DISABLE_TELEMETRY (a bool), so
+        // EWe(cwd) threw, the catch swallowed it, and isShared was silently false
+        // forever - shared sessions never rendered italic and nothing reported an error.
+        //
+        // Shape we are looking for:  function N(e){return X.join(R(),ENC(e))}
+        //                     where  function R(){return Y.join(Z(),"projects")}
+        const projDirFns = [];
+        const projFnRe = /function ([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\)\{return ([a-zA-Z0-9_$]+)\.join\(([a-zA-Z0-9_$]+)\(\),([a-zA-Z0-9_$]+)\(\2\)\)\}/g;
+        let projMatch;
+        while ((projMatch = projFnRe.exec(ejsContent)) !== null) {
+            const rootFn = projMatch[4].replace(/\$/g, '\\$');
+            const rootRe = new RegExp(`function ${rootFn}\\(\\)\\{return [a-zA-Z0-9_$]+\\.join\\([a-zA-Z0-9_$]+\\(\\),"projects"\\)\\}`);
+            if (rootRe.test(ejsContent) && !projDirFns.includes(projMatch[1])) projDirFns.push(projMatch[1]);
+        }
+        if (projDirFns.length) console.log(`      ${CYAN}ℹ project-dir helper(s) detected: ${projDirFns.join(', ')}${RESET}`);
+        else console.log(`      ${YELLOW}⚠ no project-dir helper found - isShared will use the inline fallback${RESET}`);
+
         let p12ExtFound = false;
         ejsContent = ejsContent.replace(/isCurrentWorkspace:([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\.cwd,this\.cwd\),\.\.\.([a-zA-Z0-9_$]+)\}\}\)/g, (match, rQe, oVar, sVar) => {
             p12ExtFound = true;
-            return `isCurrentWorkspace:${rQe}(${oVar}.cwd,this.cwd),isShared:(()=>{try{return require("fs").lstatSync(require("path").join(EWe(${oVar}.cwd),${oVar}.sessionId+".jsonl")).isSymbolicLink()}catch{return!1}})(),...${sVar}}})`;
+            // try each detected helper, guarded by typeof so an out-of-scope name is
+            // simply skipped instead of throwing; fall back to computing the path
+            // directly if the bundle ever stops exposing one.
+            const chain = projDirFns
+                .map(fn => `try{if(!_sd&&typeof ${fn}==="function")_sd=${fn}(${oVar}.cwd);}catch{}`)
+                .join('');
+            const fallback = `if(!_sd){var _sr=process.env.CLAUDE_CONFIG_DIR||_sp.join(require("os").homedir(),".claude");_sd=_sp.join(_sr,"projects",String(${oVar}.cwd).replace(/[^a-zA-Z0-9]/g,"-"));}`;
+            const expr = `(()=>{try{var _sf=require("fs"),_sp=require("path"),_sd=null;${chain}${fallback}return _sf.lstatSync(_sp.join(_sd,${oVar}.sessionId+".jsonl")).isSymbolicLink()}catch{return!1}})()`;
+            return `isCurrentWorkspace:${rQe}(${oVar}.cwd,this.cwd),isShared:${expr},...${sVar}}})`;
         });
         if (p12ExtFound) console.log(`      \x1b[32m✔ P12_ext (isShared field detection): Applied\x1b[0m`);
         else console.log(`      \x1b[31m✘ P12_ext (isShared field detection): Not found\x1b[0m`);
