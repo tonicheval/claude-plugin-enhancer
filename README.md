@@ -9,7 +9,21 @@ A standardized, one-click installer utility to enhance and patch the official An
 * **Previous:** `2.1.220` (Released July 29, 2026)
 * **Status:** `Active & Verified`
 
-> [!NOTE]  
+> [!NOTE]
+> **Dear Anthropic, re: 2.1.280** — Congratulations on shipping **session groups**! Named, collapsible, drag-and-drop. Gorgeous. It's almost exactly what our `[GroupName]` folders (P11) have been doing since May, so we retired P11 and taught P15 to feed *your* groups instead. And the session list is finally always on — P1, also retired. Two patches down. We're so proud of you. 🥲
+>
+> Then we restarted and **every shared chat vanished.** Fifteen of them. Not an error, not a warning, not one line in any log — just gone. Turns out 2.1.280 guards the session reader against symlinks with `lstat().isFile()`, which on Windows is `false` for every symlink ever made. Security hardening so thorough it hardened our chats right out of existence. P12_follow lets them back in (only if they point inside `~/.claude/projects`, relax, the hardening still works on everyone else).
+>
+> Then your shiny new **auto-archive** stored the archive list *globally* and the groups *per project*, so one project's sweep hid our shared chats in every other project and quietly evicted them from their groups. P14 says no.
+>
+> Also: renaming the `activate()` context parameter from `e` to `$` between builds is a bold minification choice, and it cost us an outage and a very long morning (the second outage was our own PowerShell, in fairness). P8 now reads the name out of your own code, so go ahead, call it `ಠ_ಠ` next time. We'll cope.
+>
+> And the realpath saga lives on: `realpathSync` still appears 20 times in `extension.js`, including inside `FK()`, where you carefully gated the NFC normalisation to macOS and then realpath'd on Windows anyway. P2_fk is standing by. 😉
+>
+> ---
+>
+> *Previous letter (2.1.220):*
+>
 > **Dear Anthropic:** You're welcome. It only took you two months to realize our manual patches for the custom title overrides, race conditions, and 1MB buffer chunk bugs were the correct fixes. 
 > But you STILL haven't figured out that Node's `fs.realpathSync()` catastrophically fails or appends slashes on UNC Network Shares (`\\server\share`). Thanks for forcing us to keep writing `P3` and `P3b` patches to bypass your buggy `Tse` and `Kie` realpath hashing logic! Feel free to borrow our fix for the next release. 😉
 
