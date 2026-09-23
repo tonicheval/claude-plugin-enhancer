@@ -5,7 +5,8 @@ A standardized, one-click installer utility to enhance and patch the official An
 ---
 
 ### 📋 Verified & Tested Version:
-* **Claude Code Extension Version:** `2.1.220` (Released July 29, 2026)
+* **Claude Code Extension Version:** `2.1.280` — verified 23 Sep 2026 in Void, restarting after each rollout stage (see [Upgrading to a new Claude Code version](#-upgrading-to-a-new-claude-code-version))
+* **Previous:** `2.1.220` (Released July 29, 2026)
 * **Status:** `Active & Verified`
 
 > [!NOTE]  
@@ -52,7 +53,43 @@ Simply run the installer and it will configure the patched files for whichever e
 > [!NOTE]
 > **Retired 31 Jul 2026 — the Edge bridge.** Usage used to be scraped by a Microsoft Edge extension that POSTed to `localhost:54321`, on the assumption that `sk-ant-oat01…` tokens could not read the usage endpoint. **That assumption was wrong** — the OAuth token queries `/api/oauth/usage` perfectly well. The bridge also reported whichever account *Edge* was logged into and filed it under whichever account the IDE thought was active, so the counter was reliably wrong after a swap. The boot task that warmed its cache is retired too: it launched Edge at login and then ran `taskkill /f /im msedge.exe`, killing every Edge window you had open. Source is kept under `edge-extension/` for reference; set `DEPLOY_EDGE_EXT=1` to restore both.
 
-*(Note: Features P1-P7, P9-P10 are now fully natively supported by Anthropic as of v2.1.206! We kept our Custom Session Grouping Tags [P11] logic backed up for future optional integrations).*
+4. **🔗 Shared Chats — `[s]` (P12\*, `sync-shared.ps1`)**
+   * Rename a chat to `[s] title`. On the next editor start, `sync-shared.ps1` (launched by P8 on activation) moves it to `~/.claude/projects/General/`, strips the `[s]`, and symlinks it into **every** project, so it appears in all workspaces.
+   * Shared chats are shown in *italics* (P12_ext + P12_wjs_a/b/c).
+   * **P12_follow** — 2.1.280 added symlink hardening to the session reader (`lstat().isFile()` on Windows), which silently hid **every** shared chat. P12_follow lets a symlink through only if it resolves to a regular file inside `~/.claude/projects`; any other symlink is still refused.
+   * Symlink creation needs Windows Developer Mode or an elevated shell.
+
+5. **📁 Folder Groups — `[Name]` (P15)**
+   * Rename a chat to `[Name] title` and it is moved into the native session group **Name** (created if needed, matched case-insensitively), and the `[Name]` prefix is removed from the title.
+   * Combine with sharing: `[s][Name] title` shares **and** groups it.
+   * Groups are stored per project by Claude Code, but titles are global. So the group name is written to `~/.claude/folder-groups.json` **before** the prefix is removed, and every project applies it the first time it lists that chat — a shared chat lands in the same group everywhere.
+   * Applied once per project; after that, regrouping by hand (drag, "Remove from group") always wins. Typing a **new** `[Name]` moves the chat again, in every project.
+   * Dragging a chat into a group is native, per project only, and does not touch the title.
+   * Happens on the next session-list load (refresh button, opening the sidebar or a panel, starting/ending a chat, reload) — not the instant you rename.
+   * The title change is an appended title record (the extension's own rename); chat files are never rewritten, and the earlier title stays in the file history.
+
+6. **🗄️ Auto-Archive Protection (P14)**
+   * 2.1.280 auto-archives chats idle for 14 days (`claudeCode.archiveInactiveSessions`). Archive only **hides** a chat — the file is never deleted.
+   * Grouped chats are natively exempt. **P14 also exempts shared chats**: the archive list is global while groups are per project, so without it one project's sweep hid a shared chat everywhere and dropped it out of its group. You can still archive shared chats by hand.
+
+7. **ℹ️ Session Info & Size (P8 + P1_session_cmd)**
+   * `Claude: Show Session Info & Size` — open the JSONL, copy the session ID or file path, compact. The status bar follows the active chat tab (P13 / P13_panel).
+
+### Patch map (2.1.280)
+
+| Patch | Stage | What it does |
+|---|---|---|
+| P1_session_cmd | A | Registers the Session Info command in `package.json` |
+| P3, P3_cwd | A | Path normalisation for mapped/UNC drives (session folder hashing) |
+| P8 | B | Status bar, usage, account switcher, auto-swap, session size, launches `sync-shared.ps1` |
+| P2_fk | C | Realpath bypass in 2.1.280's `FK()` helper — **unverified**, only matters on mapped drives |
+| P13, P13_panel | C | Feed the active chat to the status bar |
+| P12_ext, P12_wjs_a/b/c | C | Mark and italicise shared chats |
+| P12_follow | C | List symlinked (shared) chats again |
+| P14 | C | Never auto-archive shared chats |
+| P15 | C | `[Name]` title → native group |
+
+**Retired for 2.1.280:** P1 (the sessions list is now always enabled natively) and P11 (the old `[Name]` grouping hack — replaced by native groups via P15). P2 and P3b no longer match anything on 2.1.280 and report `⊘ n/a`. Features P1–P7 and P9–P10 of the original set have been native since v2.1.206.
 
 ---
 
@@ -70,12 +107,58 @@ No browser step any more — the usage counter authenticates with your own OAuth
 > [!WARNING]
 > The installer restores each file from a pristine `*.bak-v<version>-clean` copy before patching. If that clean copy is missing for a file, it is created from whatever is on disk **right now** — so re-running against an already-patched file will bake those patches in as the new baseline. Check that `extension.js.bak-v<version>-clean` and `webview/index.js.bak-v<version>-clean` both exist before re-running after a manual edit.
 
+The installer patches the version the editor's `extensions.json` actually points at (falling back to the newest folder), and exits with code `2` and a `⚠ INSTALLER FINISHED WITH N PATCH FAILURE(S)` banner if any patch did not go in. `✔ injected` still only means *injected* — only a restart proves a patch works.
+
+---
+
+## 🔼 Upgrading to a New Claude Code Version
+
+Claude Code in the editor runs *through* this extension. If `activate()` throws, the whole extension is marked failed — status bar, account switcher, session list **and the agent itself** — so a bad patch locks you out of Claude. Bring a new version up in stages, restarting and checking the screen after each:
+
+| Stage | Command | Check on screen after restart |
+|---|---|---|
+| **A** | `install.bat A` | Agent answers, session list shows |
+| **B** | `install.bat B` | Status bar usage, account swap, Session Info |
+| **C** | `install.bat C` (or plain `install.bat`) | Shared chats listed in italics and open with history; `[Name]` chats grouped |
+
+Stages are cumulative. Commit installer changes only after stage C is confirmed on screen.
+
+**Safety built in:**
+* P8 and the P13/P15 hooks are wrapped in `try/catch` — a throw degrades that feature and is logged as `[enhancer] …` instead of killing activation.
+* Minified names change every build. Patches capture them from the surrounding code (P8 binds the ExtensionContext it finds, e.g. `e` in 2.1.220, `$` in 2.1.280); P15 only calls the extension's **named** methods.
+
+**When something is wrong, read the logs first — they rotate quickly.** For the custom Void build they are in `%APPDATA%\code-oss-dev\logs\<newest folder by name>\` (not `%APPDATA%\Void\logs`):
+* `window*\exthost\exthost.log` → `Activating extension Anthropic.claude-code failed` (a patch broke activation)
+* `window*\renderer.log` → `[enhancer] …` (a guarded patch failed and degraded)
+* `sharedprocess.log` / `renderer.log` → `Invalid extensions content` (see below)
+
+> [!CAUTION]
+> **Never write `extensions.json` or `.obsolete` with PowerShell** (`ConvertTo-Json` / `Set-Content`). It turns the one-element array into a bare object and adds a BOM; the editor then rejects the file and loads **no extensions at all** — indistinguishable from a patch failure unless you read the logs. This caused the second 2.1.280 outage on 23 Sep 2026. Use `node` for any edit. The installer now refuses to run on an invalid registry.
+>
+> Also note that the editor **deletes folders listed in `.obsolete` at startup**, so keep a snapshot of a known-good build outside the extensions folder before rolling back.
+
+**Back to a clean base camp** (removes all patches, keeps the version):
+```powershell
+Get-ChildItem "$env:USERPROFILE\.void-editor\extensions\anthropic.claude-code-<version>-win32-x64" -Recurse -Filter *.bak-v<version>-clean |
+  % { Copy-Item $_.FullName ($_.FullName -replace '\.bak-v[\d.]+-clean$','') -Force }
+```
+
+## 🛡️ Chat Safety
+
+Chats must survive anything. As verified against 2.1.280:
+* Nothing in the extension or these patches deletes a local chat file. Archive only hides a chat, and the extension's "delete session" path applies to remote/cloud sessions only.
+* The CLI's own transcript cleanup is disabled by the installer (`cleanupPeriodDays = 9999` in `~/.claude/settings.json`).
+* Updating the extension deletes the old extension folder — nothing of value is stored there (only the `.bak-v*-clean` copies, which can be re-downloaded).
+* Every write these patches make to a chat file is an **append** (title records). Nothing rewrites or truncates a transcript.
+* `backup-sessions.ps1` (scheduled task `ClaudeSessionBackup`, daily 03:00) copies every real session file to `~/.claude/projects/backup/sessions/` and `Q:\.claude-session-backup\`. Known gaps: its git commit/push step never runs (`Q:\` is not a git repo), each run overwrites the previous copy, and session subfolders are only copied once.
+
 ---
 
 ## Folder Structure
 
-* `install.js` — The master Node.js installer and regex patch engine.
-* `install.bat` — The one-click Windows shortcut launcher.
+* `install.js` — The master Node.js installer and regex patch engine. `ENHANCER_STAGE=A|B|C` selects the rollout stage (default `C`).
+* `install.bat` — The one-click Windows shortcut launcher. Optional argument: the stage (`install.bat A`).
+* `sync-shared.ps1` — Shared-chat sync (`[s]` → `General\` + symlinks). Deployed to `~/.claude/projects/` by the installer; the repo copy is the source of truth.
 * `edge-extension/` — Source for the **retired** Edge extension, kept for reference. Not deployed unless `DEPLOY_EDGE_EXT=1`.
 
 ## Runtime State Files
@@ -88,6 +171,9 @@ No browser step any more — the usage counter authenticates with your own OAuth
 | `~/.claude/.active_account` | `"1"` or `"2"` — which slot is live |
 | `~/.claude/usage_account{1,2}.json` | Per-account usage cache |
 | `~/.claude/.autoswap_state.json` | Auto-swap cooldown timestamp (survives reloads) |
+| `~/.claude/folder-groups.json` | P15: chat ID → group name, and which projects have applied it. The only record of a stripped `[Name]`; a corrupt copy is set aside as `.corrupt-<time>`, never overwritten |
+| `~/.claude/projects/General/` | Real files of shared chats; each project folder holds symlinks to them |
+| Editor state (`globalState`) | Native groups (`sessionGroups:<project>`, per project) and the archive list (`hiddenSessionIds`, global) |
 
 ---
 
