@@ -18,7 +18,7 @@ console.log(`====================================================${RESET}\n`);
 // brought up one stage at a time with a restart + on-screen check in between:
 //   A  P1_session_cmd, P3, P3_cwd              (package.json + path normalisation)
 //   B  A + P8                                  (status bar / account switcher IIFE in activate())
-//   C  B + P2/P2_fk, P3b, P13*, P12*           (everything - the default)
+//   C  B + P2/P2_fk, P3b, P13*, P12*, P14, P15  (everything - the default)
 // Shared chat needs B AND C: P8 spawns sync-shared.ps1 (moves [s] chats to General\ and symlinks
 // them into every project), P12_follow lets the list read those symlinks, P12_* mark them italic.
 //   ENHANCER_STAGE=A node install.js
@@ -403,6 +403,135 @@ try {
         if (p12Follow) console.log(`      \x1b[32m✔ P12_follow (list symlinked shared sessions): Applied\x1b[0m`);
         else { console.log(`      \x1b[31m✘ P12_follow (list symlinked shared sessions): Not found - SHARED CHATS WILL NOT LIST\x1b[0m`); failures.push(`${appName}: P12_follow - not found`); }
 
+        // P14: never AUTO-archive a shared chat. 2.1.280 auto-archives chats idle for N days, and
+        // the archive list is global while groups are per project - so a shared chat grouped in one
+        // project was archived by another project's sweep, which hid it everywhere and dropped it
+        // out of its group. Manual archive still works. Relies on isShared from P12_ext.
+        let p14 = false;
+        ejsContent = ejsContent.replace(/(isInUse:([a-zA-Z0-9_$]+),unarchivedAt:[a-zA-Z0-9_$]+\}=[a-zA-Z0-9_$]+;[\s\S]{0,400}?)if\(\2\(([a-zA-Z0-9_$]+)\)\)continue;/, (match, head, inUse, s) => {
+            p14 = true;
+            return `${head}if(${inUse}(${s})||${s}&&${s}.isShared===true)continue;`;
+        });
+        if (p14) console.log(`      \x1b[32m✔ P14 (never auto-archive shared chats): Applied\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P14 (never auto-archive shared chats): Not found\x1b[0m`); failures.push(`${appName}: P14 - not found`); }
+
+        // P15: "[Folder] title" -> native session group "Folder", prefix stripped (like [s] sharing).
+        // Runs when a project's session list loads, BEFORE the auto-archive sweep, so grouped chats
+        // are exempt from it. Uses only the extension's named methods (renameSession,
+        // updateSessionGroups, unarchiveSessions, settings.*) - never minified helpers, which are
+        // renamed every build. Groups are per project but titles are global, so the prefix is
+        // recorded in ~/.claude/folder-groups.json first; every project then applies it once
+        // (after that the user's own group changes win). Never throws into the list load.
+        async function folderGroupsHook(self, list, genAtBuild) {
+            const prev = globalThis.__folderGroupsLock || Promise.resolve();
+            let release;
+            globalThis.__folderGroupsLock = new Promise(r => { release = r; });
+            await prev;
+            try {
+                const fs = require("fs"), path = require("path"), os = require("os");
+                const regPath = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "folder-groups.json");
+                const saveReg = reg => { const tmp = regPath + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(reg, null, 2)); fs.renameSync(tmp, regPath); };
+                let reg = {};
+                let raw = null;
+                try { raw = fs.readFileSync(regPath, "utf8"); } catch {}
+                if (raw !== null) {
+                    try { reg = JSON.parse(raw); } catch { reg = null; }
+                    if (!reg || typeof reg !== "object" || Array.isArray(reg)) {
+                        // never overwrite the only record of stripped group names - set it aside
+                        try { fs.copyFileSync(regPath, regPath + ".corrupt-" + Date.now()); } catch {}
+                        try { console.error("[enhancer] P15: folder-groups.json unreadable, preserved as .corrupt-*"); } catch {}
+                        reg = {};
+                    }
+                }
+                if (!Array.isArray(list) || !self.settings) return;
+
+                // 0. The sidebar and the chat panel load their lists at the same moment. If another
+                // call changed titles/groups/archive while this list was being built or while it
+                // waited on the lock, the list is stale - showing it would put the old titles back
+                // on screen and re-renaming would append the same title line twice. Rebuild it from
+                // disk with the extension's own builder and update it in place.
+                if (typeof genAtBuild === "number" && (globalThis.__folderGroupsGen || 0) !== genAtBuild && typeof self.buildSessionList === "function") {
+                    const fresh = await self.buildSessionList();
+                    if (Array.isArray(fresh)) list.splice(0, list.length, ...fresh);
+                }
+
+                // 1. harvest "[Name] rest" titles. [s] belongs to sync-shared.ps1 - leave it alone.
+                const strip = [];
+                let titlesChanged = false;
+                for (const s of list) {
+                    const m = typeof s.customTitle === "string" && /^\s*\[([^\]]+)\]\s*(.*)$/.exec(s.customTitle);
+                    if (!m) continue;
+                    const name = m[1].trim().slice(0, 100), rest = m[2].trim();
+                    if (!name || name.toLowerCase() === "s" || !rest) continue;
+                    if (!reg[s.id] || reg[s.id].group !== name) reg[s.id] = { group: name, appliedIn: [] };
+                    strip.push([s, rest]);
+                }
+                // the group name must be on disk BEFORE the title loses it
+                if (strip.length) saveReg(reg);
+                for (const [s, rest] of strip) {
+                    try {
+                        const r = await self.renameSession(s.id, rest);
+                        if (!r || !r.skipped) { s.customTitle = rest; titlesChanged = true; }
+                    } catch (e) { try { console.error("[enhancer] P15 rename failed:", s.id, e); } catch {} }
+                }
+
+                // 2. apply the registry once per project scope
+                const scope = typeof self.settings.sessionGroupsKey === "function" ? self.settings.sessionGroupsKey() : "default";
+                const byId = new Map(list.map(s => [s.id, s]));
+                const todo = Object.entries(reg).filter(([id, r]) => r && r.group && byId.has(id) && !(Array.isArray(r.appliedIn) && r.appliedIn.includes(scope)));
+                let groupsChanged = false;
+                if (todo.length) {
+                    // archived chats cannot be in a group (2.1.280 strips them), so unarchive first.
+                    // Native unarchive also removes them from groups, hence before grouping.
+                    const archived = new Set(self.settings.getArchivedSessionIds() || []);
+                    const toUnarchive = todo.map(([id]) => id).filter(id => archived.has(id));
+                    if (toUnarchive.length) await self.unarchiveSessions(toUnarchive);
+
+                    // First application in this project: the [Name] the user typed wins, so move the
+                    // chat there (a chat can be in one group only). Afterwards the scope is recorded
+                    // in appliedIn and manual regrouping in the UI is never overridden. A NEW prefix
+                    // typed later resets appliedIn (step 1), so it moves again, in every project.
+                    const groups = (self.settings.getSessionGroups() || []).map(g => ({ ...g, sessionIds: [...g.sessionIds] }));
+                    for (const [id, r] of todo) {
+                        let g = groups.find(x => String(x.name).toLowerCase() === r.group.toLowerCase());
+                        if (!g) { g = { id: require("crypto").randomUUID(), name: r.group, collapsed: false, sessionIds: [] }; groups.push(g); }
+                        for (const other of groups) if (other !== g) other.sessionIds = other.sessionIds.filter(x => x !== id);
+                        if (!g.sessionIds.includes(id)) g.sessionIds.push(id);
+                        r.appliedIn = [...(Array.isArray(r.appliedIn) ? r.appliedIn : []), scope];
+                    }
+                    await self.updateSessionGroups(groups);
+                    saveReg(reg);
+                    groupsChanged = true;
+                }
+
+                // 3. this list may predate changes another call just made (the sidebar and the chat
+                // panel load at the same moment): take archive state from the store, not the list.
+                const archivedNow = new Set(self.settings.getArchivedSessionIds() || []);
+                for (const s of list) if (typeof s.archived === "boolean") s.archived = archivedNow.has(s.id);
+
+                // 4. every webview must re-read groups once after any change - including one whose
+                // group fetch happened before the change and whose list load waited on the lock.
+                if (groupsChanged || titlesChanged) globalThis.__folderGroupsGen = (globalThis.__folderGroupsGen || 0) + 1;
+                const gen = globalThis.__folderGroupsGen || 0;
+                const comms = globalThis.__folderGroupsComms || (globalThis.__folderGroupsComms = new Set());
+                comms.add(self);
+                if (gen > 0) for (const c of comms) {
+                    if ((c.__folderGroupsSeen || 0) >= gen) continue;
+                    c.__folderGroupsSeen = gen;
+                    try { c.sendSessionGroupsChanged && c.sendSessionGroupsChanged(); } catch { comms.delete(c); }
+                }
+            } finally { release(); }
+        }
+        let p15 = false;
+        // __fgGen is read BEFORE the list is built, so the hook can tell a list built while another
+        // call was changing things (see step 0 in the hook).
+        ejsContent = ejsContent.replace(/async readSessionList\(\)\{let ([a-zA-Z0-9_$]+=[a-zA-Z0-9_$]+\(\)),([a-zA-Z0-9_$]+)=await this\.buildSessionList\(\);/, (match, first, listVar) => {
+            p15 = true;
+            return `async readSessionList(){let ${first},__fgGen=globalThis.__folderGroupsGen||0,${listVar}=await this.buildSessionList();try{await (${folderGroupsHook.toString()})(this,${listVar},__fgGen)}catch(__e){try{console.error("[enhancer] P15 folder-groups failed:",__e)}catch{}}`;
+        });
+        if (p15) console.log(`      \x1b[32m✔ P15 ([Folder] title -> native group): Applied\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P15 ([Folder] title -> native group): Not found\x1b[0m`); failures.push(`${appName}: P15 - not found`); }
+
         // P12 (wjs): isShared signal setup
         let p12WjsA = false;
         wjsContent = wjsContent.replace(/teleportedFromSessionId=([a-zA-Z0-9_$]+)\(\(?void 0\)?\);teleportedMessageCount/g, (match, lt) => {
@@ -427,7 +556,9 @@ try {
         wjsContent = wjsContent.replace(/([a-zA-Z0-9_$]+)\("span",\{className:([a-zA-Z0-9_$]+)\.sessionName,children:([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\),([a-zA-Z0-9_$]+)\)\}(,"[a-z]+")?\)/g, (match, createFn, gn, yQe, FD, tVar, rVar, keyArg) => {
             p12WjsC = true;
             const key = keyArg || '';
-            return `${createFn}("span",{className:${gn}.sessionName,children:(()=>{let _t=${FD}(${tVar}),_m=/^(\\[[^\\]]+\\])(.*)/.exec(_t);if(_m&&${tVar}.isShared&&${tVar}.isShared.value)return[${createFn}("em",{key:"sh1",children:${yQe}(_m[1],${rVar})}),${yQe}(_m[2],${rVar})];return ${yQe}(_t,${rVar})})()}${key})`;
+            // Whole title in italics. It used to style only the "[Group]" prefix, but P15 now moves
+            // that prefix into a native group and strips it, so there is often no prefix left.
+            return `${createFn}("span",{className:${gn}.sessionName,children:(()=>{let _t=${FD}(${tVar});if(${tVar}.isShared&&${tVar}.isShared.value)return ${createFn}("em",{children:${yQe}(_t,${rVar})});return ${yQe}(_t,${rVar})})()}${key})`;
         });
         if (p12WjsC) console.log(`      \x1b[32m✔ P12_wjs_c (isShared italic rendering): Applied\x1b[0m`);
         else { console.log(`      \x1b[31m✘ P12_wjs_c (isShared italic rendering): Not found\x1b[0m`); failures.push(`${appName}: P12_wjs_c - not found`); }
