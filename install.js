@@ -16,9 +16,9 @@ console.log(`====================================================${RESET}\n`);
 
 // Staged rollout. Patches are applied cumulatively by risk, so a new Claude Code release can be
 // brought up one stage at a time with a restart + on-screen check in between:
-//   A  P1_session_cmd, P3, P3_cwd              (package.json + path normalisation)
+//   A  P1_session_cmd, P3, P3_cwd, P3_unc      (package.json + path normalisation)
 //   B  A + P8                                  (status bar / account switcher IIFE in activate())
-//   C  B + P2/P2_fk, P3b, P13*, P12*, P14, P15  (everything - the default)
+//   C  B + P2/P2_fk, P3b, P13*, P12*, P14, P15, P16  (everything - the default)
 // Shared chat needs B AND C: P8 spawns sync-shared.ps1 (moves [s] chats to General\ and symlinks
 // them into every project), P12_follow lets the list read those symlinks, P12_* mark them italic.
 //   ENHANCER_STAGE=A node install.js
@@ -240,6 +240,23 @@ try {
         if (p3cwdFound) console.log(`      \x1b[32m✔ P3_cwd (Normalize global cwd): Applied\x1b[0m`);
         else { console.log(`      \x1b[31m✘ P3_cwd (Normalize global cwd): Not found\x1b[0m`); failures.push(`${appName}: P3_cwd - not found`); }
         
+        // P3_unc: UNC share-root workspaces (\\server\share) list NO sessions on 2.1.280.
+        // The CLI writes transcripts under path.resolve(cwd), and path.resolve gives a share root a
+        // trailing backslash -> projects\--server-share-  (trailing dash). 2.1.280's session lister
+        // first runs the workspace through the NATIVE realpath, which drops that backslash, and then
+        // only searches  projects\--server-share  -> a folder that does not exist -> empty list.
+        // (Its new drive-letter fallback only covers X:\ paths, not raw UNC.) Also search the path
+        // exactly as given (this.cwd, already normalised by P3_cwd) whenever it differs. Adding a
+        // candidate only widens the search; results are de-duplicated by session id downstream.
+        // Verified 2026-09-23 on \\192.168.1.120\3D Total: 0 -> 45 sessions (30 real + 15 shared).
+        let p3unc = false;
+        ejsContent = ejsContent.replace(/(let ([a-zA-Z0-9_$]+)=await [a-zA-Z0-9_$]+\(\$,[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+\)\),[a-zA-Z0-9_$]+=[a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+\)\),([a-zA-Z0-9_$]+)=[a-zA-Z0-9_$]+\(\$,\2\)),/, (match, head, resolvedVar, candVar) => {
+            p3unc = true;
+            return `${head},__uncAdd=typeof $==="string"&&!${candVar}.some(c=>String(c).toLowerCase()===$.toLowerCase())&&${candVar}.push($),`;
+        });
+        if (p3unc) console.log(`      \x1b[32m✔ P3_unc (UNC share root lists its sessions): Applied\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P3_unc (UNC share root lists its sessions): Not found - \\\\server\\share workspaces will list NO sessions\x1b[0m`); failures.push(`${appName}: P3_unc - not found`); }
+
         if (stage('C')) { // ---- stage C: P3b ----
         // P3b: async realpath bypass (hung on mapped/network drives when listing sessions).
         //
@@ -532,6 +549,113 @@ try {
         if (p15) console.log(`      \x1b[32m✔ P15 ([Folder] title -> native group): Applied\x1b[0m`);
         else { console.log(`      \x1b[31m✘ P15 ([Folder] title -> native group): Not found\x1b[0m`); failures.push(`${appName}: P15 - not found`); }
 
+        // P16: heal chat titles that drifted out of reach (successor to P6, see #93115).
+        // Every 2.1.x build finds a chat's title by reading only the first and last 64 KB of the
+        // transcript. Once a chat grows 64 KB past its last title record, the list, the tab, the
+        // CLI and the auto-titler all stop seeing the title (the auto-titler may then overwrite
+        // it). P6 used to raise the window to 1 MB - slow on every list load, and still broken
+        // past 1 MB (chats here reach 50 MB). Instead: remember titles in
+        // ~/.claude/session-titles.json (seeded by the installer, refreshed from every list load)
+        // and, when a remembered chat comes back without its title, re-append the file's own
+        // latest title record so it is back inside the window for EVERY reader. The file is the
+        // source of truth; the memory only says "this chat has a title - check it". Append-only,
+        // modified time restored so the chat does not jump to the top. Never throws into the
+        // list load. Runs before P15, so a drifted "[Name]" title still gets grouped.
+        async function titleHealHook(self, list) {
+            const prev = globalThis.__titleHealLock || Promise.resolve();
+            let release;
+            globalThis.__titleHealLock = new Promise(r => { release = r; });
+            await prev;
+            try {
+                if (!Array.isArray(list)) return;
+                const fs = require("fs"), path = require("path"), os = require("os");
+                const cfg = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+                const memPath = path.join(cfg, "session-titles.json"), projRoot = path.join(cfg, "projects");
+                const WINDOW = 65536;
+                let mem = {}, raw = null, dirty = false;
+                try { raw = fs.readFileSync(memPath, "utf8"); } catch {}
+                if (raw !== null) {
+                    try { mem = JSON.parse(raw); } catch { mem = null; }
+                    if (!mem || typeof mem !== "object" || Array.isArray(mem)) {
+                        try { fs.copyFileSync(memPath, memPath + ".corrupt-" + Date.now()); } catch {}
+                        mem = {};
+                    }
+                }
+                // one readdir per project folder per load: where each chat lives, and which of
+                // those places also has the 2.1.280 title sidecar <dir>/<id>/custom-title.json
+                const index = [];
+                try {
+                    for (const d of fs.readdirSync(projRoot, { withFileTypes: true })) {
+                        if (!d.isDirectory() || d.name === "backup") continue;
+                        try { index.push([path.join(projRoot, d.name), new Set(fs.readdirSync(path.join(projRoot, d.name)))]); } catch {}
+                    }
+                } catch {}
+                const homesOf = id => index.filter(([, names]) => names.has(id + ".jsonl")).map(([dir]) => dir);
+                const sidecarsOf = id => index.filter(([, names]) => names.has(id + ".jsonl") && names.has(id))
+                    .map(([dir]) => path.join(dir, id, "custom-title.json")).filter(p => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+                const sidecarTitle = p => { try { const o = JSON.parse(fs.readFileSync(p, "utf8")); return o && typeof o.customTitle === "string" ? o.customTitle : null; } catch { return null; } };
+                const lastTitleIn = text => {
+                    let last = null;
+                    for (const line of text.split("\n")) {
+                        if (!line.includes('"custom-title"')) continue;
+                        try { const o = JSON.parse(line); if (o && o.type === "custom-title" && typeof o.customTitle === "string" && o.customTitle) last = o.customTitle; } catch {}
+                    }
+                    return last;
+                };
+                for (const s of list) {
+                    if (!s || typeof s.id !== "string") continue;
+                    const seen = typeof s.customTitle === "string" && s.customTitle ? s.customTitle : null;
+                    const known = typeof mem[s.id] === "string" ? mem[s.id] : null;
+                    if (!known && !seen) continue;                              // never had a title
+                    const sidecars = sidecarsOf(s.id);
+                    const expect = seen || known;
+                    const staleSidecar = sidecars.some(p => sidecarTitle(p) !== expect);
+                    if (known && seen === known && !staleSidecar) continue;     // all consistent - no I/O
+                    if (!known && !staleSidecar) { mem[s.id] = seen; dirty = true; continue; } // first sighting
+                    // something disagrees: the transcript's own latest title record decides
+                    const homes = homesOf(s.id);
+                    if (!homes.length) continue;
+                    let file, st, buf;
+                    try { file = fs.realpathSync(path.join(homes[0], s.id + ".jsonl")); st = fs.statSync(file); if (!st.isFile()) continue; buf = fs.readFileSync(file); } catch { continue; }
+                    const last = lastTitleIn(buf.toString("utf8"));
+                    if (!last) continue;
+                    // the native reader checks the tail window, then the sidecar, then the head window;
+                    // re-appending puts the latest title in the tail, which beats a stale sidecar too
+                    const rec = '"customTitle":' + JSON.stringify(last);
+                    const inTail = buf.subarray(Math.max(0, buf.length - WINDOW)).toString("utf8").includes(rec);
+                    const inHead = buf.subarray(0, WINDOW).toString("utf8").includes(rec);
+                    // not in the tail => the tail holds no title at all; the reader then uses a sidecar
+                    // if there is one, else the head. Append unless the head alone already shows it.
+                    if (!inTail && !(inHead && !sidecars.length)) {
+                        try {
+                            const sep = buf.length && buf[buf.length - 1] !== 10 ? "\n" : "";
+                            fs.appendFileSync(file, sep + JSON.stringify({ type: "custom-title", customTitle: last, sessionId: s.id }) + "\n");
+                            try { fs.utimesSync(file, st.atime, st.mtime); } catch {}
+                            try { console.log("[enhancer] P16 re-appended drifted title:", s.id, JSON.stringify(last)); } catch {}
+                        } catch (e) { try { console.error("[enhancer] P16 heal failed:", s.id, e); } catch {} continue; }
+                    }
+                    for (const p of sidecars) {
+                        if (sidecarTitle(p) === last) continue;
+                        try {
+                            const tmp = p + ".tmp";
+                            fs.writeFileSync(tmp, JSON.stringify({ customTitle: last })); fs.renameSync(tmp, p);
+                            try { console.log("[enhancer] P16 corrected stale title sidecar:", p, JSON.stringify(last)); } catch {}
+                        } catch (e) { try { console.error("[enhancer] P16 sidecar fix failed:", p, e); } catch {} }
+                    }
+                    s.customTitle = last;
+                    if (mem[s.id] !== last) { mem[s.id] = last; dirty = true; }
+                }
+                if (dirty) { const tmp = memPath + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(mem, null, 1)); fs.renameSync(tmp, memPath); }
+            } finally { release(); }
+        }
+        let p16 = false;
+        ejsContent = ejsContent.replace(/(async readSessionList\(\)\{let [^;]*?([a-zA-Z0-9_$]+)=await this\.buildSessionList\(\);)/, (match, head, listVar) => {
+            p16 = true;
+            return `${head}try{await (${titleHealHook.toString()})(this,${listVar})}catch(__e){try{console.error("[enhancer] P16 title-heal failed:",__e)}catch{}}`;
+        });
+        if (p16) console.log(`      \x1b[32m✔ P16 (heal drifted chat titles): Applied\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P16 (heal drifted chat titles): Not found\x1b[0m`); failures.push(`${appName}: P16 - not found`); }
+
         // P12 (wjs): isShared signal setup
         let p12WjsA = false;
         wjsContent = wjsContent.replace(/teleportedFromSessionId=([a-zA-Z0-9_$]+)\(\(?void 0\)?\);teleportedMessageCount/g, (match, lt) => {
@@ -633,6 +757,49 @@ try {
         }
     } catch (e) {}
     
+    // P16 needs to know which chats have a title. Seed ~/.claude/session-titles.json from every
+    // real transcript's LAST custom-title record (read-only on the chats), so titles that already
+    // drifted out of the 64 KB window get healed on the next list load. File beats memory.
+    if (stage('C')) {
+        try {
+            const cfgDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir, '.claude');
+            const projRoot = path.join(cfgDir, 'projects'), memPath = path.join(cfgDir, 'session-titles.json');
+            let mem = {};
+            if (fs.existsSync(memPath)) {
+                try { mem = JSON.parse(fs.readFileSync(memPath, 'utf8')); } catch { mem = null; }
+                if (!mem || typeof mem !== 'object' || Array.isArray(mem)) {
+                    fs.copyFileSync(memPath, `${memPath}.corrupt-${Date.now()}`);
+                    mem = {};
+                }
+            }
+            let titled = 0, drifted = 0;
+            for (const d of fs.existsSync(projRoot) ? fs.readdirSync(projRoot, { withFileTypes: true }) : []) {
+                if (!d.isDirectory() || d.name === 'backup') continue;
+                for (const f of fs.readdirSync(path.join(projRoot, d.name))) {
+                    if (!f.endsWith('.jsonl')) continue;
+                    const p = path.join(projRoot, d.name, f);
+                    if (fs.lstatSync(p).isSymbolicLink()) continue;
+                    const buf = fs.readFileSync(p);
+                    let last = null;
+                    for (const line of buf.toString('utf8').split('\n')) {
+                        if (!line.includes('"custom-title"')) continue;
+                        try { const o = JSON.parse(line); if (o && o.type === 'custom-title' && typeof o.customTitle === 'string' && o.customTitle) last = o.customTitle; } catch {}
+                    }
+                    if (!last) continue;
+                    titled++;
+                    mem[f.slice(0, -6)] = last;
+                    const rec = '"customTitle":' + JSON.stringify(last), W = 65536;
+                    if (!buf.subarray(Math.max(0, buf.length - W)).toString('utf8').includes(rec) && !buf.subarray(0, W).toString('utf8').includes(rec)) drifted++;
+                }
+            }
+            const tmp = `${memPath}.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify(mem, null, 1)); fs.renameSync(tmp, memPath);
+            console.log(`  ${GREEN}✔ P16 title memory: ${titled} titled chats${RESET}${drifted ? ` ${YELLOW}(${drifted} out of reach - healed on next list load)${RESET}` : ''}`);
+        } catch (e) {
+            console.log(`  ${YELLOW}⚠ P16 title memory not seeded: ${e.message}${RESET}`);
+        }
+    }
+
     console.log(`\n${BOLD}[7/7] Setting up automated session backup...${RESET}`);
     console.log(`  ${GREEN}✔ Backup script & Scheduled task preserved${RESET}`);
     

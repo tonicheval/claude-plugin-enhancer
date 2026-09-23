@@ -20,6 +20,8 @@ A standardized, one-click installer utility to enhance and patch the official An
 >
 > And the realpath saga lives on: `realpathSync` still appears 20 times in `extension.js`, including inside `FK()`, where you carefully gated the NFC normalisation to macOS and then realpath'd on Windows anyway. P2_fk is standing by. 😉
 >
+> P.S. Nice new drive-letter fallback for mapped drives (`Ly$`)! Shame about `\\server\share`: your CLI files chats under the share root *with* its trailing backslash, your list reads it back *without*, and a whole project comes up empty. P3_unc adds the backslash back. We've been doing trailing-slash archaeology on UNC paths since July; happy to lend a brush.
+>
 > ---
 >
 > *Previous letter (2.1.220):*
@@ -86,7 +88,13 @@ Simply run the installer and it will configure the patched files for whichever e
    * 2.1.280 auto-archives chats idle for 14 days (`claudeCode.archiveInactiveSessions`). Archive only **hides** a chat — the file is never deleted.
    * Grouped chats are natively exempt. **P14 also exempts shared chats**: the archive list is global while groups are per project, so without it one project's sweep hid a shared chat everywhere and dropped it out of its group. You can still archive shared chats by hand.
 
-7. **ℹ️ Session Info & Size (P8 + P1_session_cmd)**
+7. **🏷️ Title Healing (P16 — successor to P6)**
+   * Every 2.1.x build finds a chat's title by reading only the **first and last 64 KB** of the transcript (still true in 2.1.280 — P6's old 1 MB bump was retired in July on the wrong assumption it had gone native; see [anthropics/claude-code#93115](https://github.com/anthropics/claude-code/issues/93115)). Once a chat grows past its last title record, the list shows the **last prompt** instead, or an older title from the start of the file.
+   * 2.1.280 also added a per-chat title sidecar (`<project>/<id>/custom-title.json`) that is consulted before the head — but not every rename path updates it, so it can go stale (P15's prefix strip left `[Void]…` behind in one).
+   * P16 remembers titles in `~/.claude/session-titles.json` (seeded by the installer, refreshed free on every list load). When a remembered chat comes back with a missing or different title, or a sidecar disagrees, the transcript's own latest title record decides: it is re-appended if out of reach (modified time kept, so the chat does not jump to the top) and stale sidecars are corrected. No extra reads while everything agrees.
+   * Why not just bump the window like P6: that reads up to 2 MB per chat on every list load, and still breaks past 1 MB (chats here reach 50 MB).
+
+8. **ℹ️ Session Info & Size (P8 + P1_session_cmd)**
    * `Claude: Show Session Info & Size` — open the JSONL, copy the session ID or file path, compact. The status bar follows the active chat tab (P13 / P13_panel).
 
 ### Patch map (2.1.280)
@@ -95,6 +103,7 @@ Simply run the installer and it will configure the patched files for whichever e
 |---|---|---|
 | P1_session_cmd | A | Registers the Session Info command in `package.json` |
 | P3, P3_cwd | A | Path normalisation for mapped/UNC drives (session folder hashing) |
+| P3_unc | A | `\\server\share` workspaces: 2.1.280's lister strips the share root's trailing `\` and searches a folder that does not exist (0 sessions); also search the path as given |
 | P8 | B | Status bar, usage, account switcher, auto-swap, session size, launches `sync-shared.ps1` |
 | P2_fk | C | Realpath bypass in 2.1.280's `FK()` helper — **unverified**, only matters on mapped drives |
 | P13, P13_panel | C | Feed the active chat to the status bar |
@@ -102,6 +111,7 @@ Simply run the installer and it will configure the patched files for whichever e
 | P12_follow | C | List symlinked (shared) chats again |
 | P14 | C | Never auto-archive shared chats |
 | P15 | C | `[Name]` title → native group |
+| P16 | C | Heal chat titles that drifted out of the 64 KB read window; fix stale title sidecars |
 
 **Retired for 2.1.280:** P1 (the sessions list is now always enabled natively) and P11 (the old `[Name]` grouping hack — replaced by native groups via P15). P2 and P3b no longer match anything on 2.1.280 and report `⊘ n/a`. Features P1–P7 and P9–P10 of the original set have been native since v2.1.206.
 
@@ -186,6 +196,8 @@ Chats must survive anything. As verified against 2.1.280:
 | `~/.claude/usage_account{1,2}.json` | Per-account usage cache |
 | `~/.claude/.autoswap_state.json` | Auto-swap cooldown timestamp (survives reloads) |
 | `~/.claude/folder-groups.json` | P15: chat ID → group name, and which projects have applied it. The only record of a stripped `[Name]`; a corrupt copy is set aside as `.corrupt-<time>`, never overwritten |
+| `~/.claude/session-titles.json` | P16: chat ID → last known custom title (a hint to check the transcript; the transcript always wins). A corrupt copy is set aside as `.corrupt-<time>` |
+| `<project>/<id>/custom-title.json` | 2.1.280's native title sidecar; P16 corrects stale ones, never creates them |
 | `~/.claude/projects/General/` | Real files of shared chats; each project folder holds symlinks to them |
 | Editor state (`globalState`) | Native groups (`sessionGroups:<project>`, per project) and the archive list (`hiddenSessionIds`, global) |
 
