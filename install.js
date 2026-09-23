@@ -167,6 +167,15 @@ try {
         
         // P3b: async realpath bypass (hung on mapped/network drives when listing sessions).
         //
+        // !!! THE CONCLUSION BELOW IS WRONG - DISPROVEN 2026-09-23 !!!
+        // Shipping 2.1.280 without P2/P3b equivalents produced an EMPTY session list: the 958
+        // session files were intact on disk, but the extension resolved the wrong project folder
+        // and found none of them. Rolled back to 2.1.220. Do not trust "P3 + P3_cwd cover it" -
+        // it was reasoning from code shape and was never tested. Before 2.1.280+ is attempted
+        // again, find the real equivalent of these on that build and confirm, by restarting the
+        // editor, that sessions actually list.
+        //
+        // Original (incorrect) reasoning retained for context:
         // NOT APPLICABLE from 2.1.280 onward, and deliberately not re-targeted. Anthropic moved
         // NFC normalisation behind a platform guard - `function i0($){return
         // process.platform==="darwin"?$.normalize("NFC"):$}` - so the `X(await Y.realpath(z))`
