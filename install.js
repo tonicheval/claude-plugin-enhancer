@@ -14,9 +14,29 @@ console.log(`${CYAN}${BOLD}====================================================`
 console.log(`          CLAUDE PLUGIN ENHANCER INSTALLER          `);
 console.log(`====================================================${RESET}\n`);
 
+// Staged rollout. Patches are applied cumulatively by risk, so a new Claude Code release can be
+// brought up one stage at a time with a restart + on-screen check in between:
+//   A  P1_session_cmd, P3, P3_cwd              (package.json + path normalisation)
+//   B  A + P8                                  (status bar / account switcher IIFE in activate())
+//   C  B + P2/P2_fk, P3b, P13*, P12*           (everything - the default)
+// Shared chat needs B AND C: P8 spawns sync-shared.ps1 (moves [s] chats to General\ and symlinks
+// them into every project), P12_follow lets the list read those symlinks, P12_* mark them italic.
+//   ENHANCER_STAGE=A node install.js
+const STAGE = (process.env.ENHANCER_STAGE || 'C').toUpperCase();
+if (!['A', 'B', 'C'].includes(STAGE)) {
+    console.error(`${RED}ENHANCER_STAGE must be A, B or C (got '${STAGE}')${RESET}`);
+    process.exit(1);
+}
+const stage = s => STAGE >= s;
+
+// Anything that is not "✔ Applied" or a known/expected skip lands here, so the final banner
+// cannot claim success when a patch did not go in.
+const failures = [];
+
 try {
     const homedir = os.homedir();
-    
+    console.log(`${BOLD}Stage ${STAGE}${RESET}${STAGE === 'C' ? '' : ` ${YELLOW}(partial rollout - later stages are NOT applied)${RESET}`}\n`);
+
     console.log(`${BOLD}[1/7] Detecting Claude Code extension folders...${RESET}`);
     const potentialBases = [
         { name: "Void Editor", path: path.join(homedir, '.void-editor', 'extensions') },
@@ -28,13 +48,36 @@ try {
     
     for (const app of potentialBases) {
         if (fs.existsSync(app.path)) {
+            // The registry must be a JSON ARRAY. If it is not, the editor rejects it with
+            // "Invalid extensions content" and loads NO user extensions at all - which looks
+            // exactly like our patches killed activate(). That is what the second 2026-09-23
+            // outage actually was: a PowerShell ConvertTo-Json rewrite collapsed the one-element
+            // array into a bare object (plus a BOM). Refuse to go on rather than let the next
+            // restart fail for a reason nobody will look for in extension.js.
+            const regPath = path.join(app.path, 'extensions.json');
+            let registered = null;
+            if (fs.existsSync(regPath)) {
+                let reg;
+                try { reg = JSON.parse(fs.readFileSync(regPath, 'utf8').replace(/^﻿/, '').trim() || '[]'); }
+                catch (e) { throw new Error(`${app.name}: ${regPath} is not valid JSON (${e.message}). The editor will load NO extensions. Fix it before patching.`); }
+                if (!Array.isArray(reg)) throw new Error(`${app.name}: ${regPath} is a JSON ${typeof reg}, not an array. The editor will reject it and load NO extensions. Wrap it in [ ] (and write it without a BOM) before patching.`);
+                const entry = reg.find(e => e && e.identifier && String(e.identifier.id).toLowerCase() === 'anthropic.claude-code');
+                if (entry && typeof entry.relativeLocation === 'string' && entry.relativeLocation) registered = entry.relativeLocation;
+            }
+
             const dirs = fs.readdirSync(app.path)
                 .filter(d => d.startsWith('anthropic.claude-code-') && fs.statSync(path.join(app.path, d)).isDirectory());
-            
-            if (dirs.length > 0) {
+
+            // Patch the build the editor will actually load, not merely the newest folder - old
+            // versions are left on disk for rollback and their mtime moves whenever they are touched.
+            let pick = null;
+            if (registered && dirs.includes(registered)) pick = registered;
+            else if (dirs.length > 0) {
                 dirs.sort((a, b) => fs.statSync(path.join(app.path, b)).mtimeMs - fs.statSync(path.join(app.path, a)).mtimeMs);
-                targets.push({ appName: app.name, extVersion: dirs[0], extDir: path.join(app.path, dirs[0]) });
+                pick = dirs[0];
+                if (registered) console.log(`  ${YELLOW}⚠ ${app.name}: registry points at '${registered}', which is not on disk - falling back to newest folder${RESET}`);
             }
+            if (pick) targets.push({ appName: app.name, extVersion: pick, extDir: path.join(app.path, pick) });
         }
     }
     
@@ -112,9 +155,10 @@ try {
                 else JSON.parse(fs.readFileSync(file, 'utf8'));
             } catch (e) {
                 console.error(`      ${RED}✘ Syntax Error after applying: ${label}${RESET}`);
+                failures.push(`${appName}: syntax error after ${label}`);
             }
         }
-        
+
         function applyRegex(fileContent, regex, newStr, label, isOptional = false) {
             if (!regex.test(fileContent)) {
                 if (isOptional) {
@@ -122,6 +166,7 @@ try {
                     return fileContent;
                 } else {
                     console.error(`      ${RED}✘ Marker not found: ${label}${RESET}`);
+                    failures.push(`${appName}: ${label} - marker not found`);
                     return fileContent;
                 }
             }
@@ -130,10 +175,11 @@ try {
             return updated;
         }
 
-        // P1: package.json sidebar always visible
-        pkgContent = applyRegex(pkgContent, /"when": "claude-vscode.sessionsListEnabled"/g, '"when": "true"', 'P1 (Sidebar visible)');
-        fs.writeFileSync(pkg, pkgContent);
+        // P1 (force the sessions sidebar visible) - RETIRED 2026-09-23 for 2.1.280.
+        // 2.1.280 sets the claude-vscode.sessionsListEnabled context to true unconditionally in
+        // activate(), so rewriting the view's `when` clause no longer changes anything.
         
+        if (stage('C')) { // ---- stage C: P2 / P2_fk ----
         // P2: Webview initialization realpathSync bypass (Symlink fix for frontend)
         let p2Found = false;
         ejsContent = ejsContent.replace(/([a-zA-Z0-9_$]+)\.realpathSync\(([a-zA-Z0-9_$]+)\[0\]\|\|([a-zA-Z0-9_$]+)\.homedir\(\)\)\.normalize\("NFC"\)/g, (match, fsVar, p1, p2) => {
@@ -141,7 +187,36 @@ try {
             return `(${p1}[0]||${p2}.homedir()).normalize("NFC")`;
         });
         if (p2Found) console.log(`      \x1b[32m✔ P2 (Webview realpath): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P2 (Webview realpath): Not found\x1b[0m`);
+        else console.log(`      \x1b[33m⊘ P2 (Webview realpath): pre-2.1.280 shape absent - P2_fk below covers it\x1b[0m`);
+
+        // P2_fk: the 2.1.280+ shape of the SAME fix. P2's target did not disappear, it moved.
+        // Anthropic folded `realpathSync(x[0]||homedir()).normalize("NFC")` into a helper:
+        //     function FK($){let J=$;try{J=fs.realpathSync($)}catch{}
+        //                    return process.platform==="darwin"?J.normalize("NFC"):J}
+        // Only the NFC half is darwin-gated - realpathSync still runs on Windows. Everything
+        // funnels through it, including `My($){return FK($[0]||homedir())}` (literally old P2)
+        // and `sessionListScopeRoot(){...return OV$(FK($))}`. On the Q: RaiDrive mount that
+        // resolves to a UNC path, the project folder is encoded from the wrong string, and the
+        // session list comes up EMPTY. This is what broke 2.1.280 on 2026-09-23.
+        // Strip the realpath, preserve the darwin NFC behaviour exactly.
+        let p2fkFound = false, fkName = null;
+        ejsContent = ejsContent.replace(/function ([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\)\{let ([a-zA-Z0-9_$]+)=\2;try\{\3=([a-zA-Z0-9_$]+)\.realpathSync\(\2\)\}catch\{\}return process\.platform==="darwin"\?\3\.normalize\("NFC"\):\3\}/g, (match, fn, arg) => {
+            p2fkFound = true; fkName = fn;
+            return `function ${fn}(${arg}){return process.platform==="darwin"?${arg}.normalize("NFC"):${arg}}`;
+        });
+        // sibling that realpaths before delegating to FK
+        let p2fk2Found = false;
+        if (fkName) {
+            const esc = fkName.replace(/\$/g, '\\$');
+            const reIj = new RegExp('function ([a-zA-Z0-9_$]+)\\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\\)\\{if\\(!\\2\\)return ' + esc + '\\(\\3\\);try\\{return ' + esc + '\\(([a-zA-Z0-9_$]+)\\.realpathSync\\(\\2\\)\\)\\}catch\\{return ' + esc + '\\(\\3\\)\\}\\}', 'g');
+            ejsContent = ejsContent.replace(reIj, (match, fn, a, b) => {
+                p2fk2Found = true;
+                return `function ${fn}(${a},${b}){if(!${a})return ${fkName}(${b});return ${fkName}(${a})}`;
+            });
+        }
+        if (p2fkFound) console.log(`      \x1b[32m✔ P2_fk (2.1.280 realpath helper, fn=${fkName}${p2fk2Found ? ' +sibling' : ''}): Applied\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P2_fk (2.1.280 realpath helper): Not found - SESSION LIST WILL BE EMPTY on mapped drives\x1b[0m`); failures.push(`${appName}: P2_fk - not found`); }
+        } else console.log(`      ${YELLOW}⊘ P2 / P2_fk: stage C (not applied at stage ${STAGE})${RESET}`);
 
         // P3: Extension realpathSync bypass (Network drive & hash fix for backend)
         let p3Found = false;
@@ -152,7 +227,7 @@ try {
             return `function ${funcName}(${argName}){return ${normalizeFuncName}(${pathName}.resolve(${argName}??"."))}`; 
         });
         if (p3Found) console.log(`      \x1b[32m✔ P3 (Backend realpath): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P3 (Backend realpath): Not found\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P3 (Backend realpath): Not found\x1b[0m`); failures.push(`${appName}: P3 - not found`); }
 
         // P3_cwd: Normalize global cwd so listSessions and startSession hash match identically
         let p3cwdFound = false;
@@ -163,16 +238,36 @@ try {
             });
         }
         if (p3cwdFound) console.log(`      \x1b[32m✔ P3_cwd (Normalize global cwd): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P3_cwd (Normalize global cwd): Not found\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P3_cwd (Normalize global cwd): Not found\x1b[0m`); failures.push(`${appName}: P3_cwd - not found`); }
         
-        // P3b: Kie() async realpath bypass (hangs on mapped/network drives when listing sessions)
+        if (stage('C')) { // ---- stage C: P3b ----
+        // P3b: async realpath bypass (hung on mapped/network drives when listing sessions).
+        //
+        // !!! THE CONCLUSION BELOW IS WRONG - DISPROVEN 2026-09-23 !!!
+        // Shipping 2.1.280 without P2/P3b equivalents produced an EMPTY session list: the 958
+        // session files were intact on disk, but the extension resolved the wrong project folder
+        // and found none of them. Rolled back to 2.1.220. Do not trust "P3 + P3_cwd cover it" -
+        // it was reasoning from code shape and was never tested. Before 2.1.280+ is attempted
+        // again, find the real equivalent of these on that build and confirm, by restarting the
+        // editor, that sessions actually list.
+        //
+        // Original (incorrect) reasoning retained for context:
+        // NOT APPLICABLE from 2.1.280 onward, and deliberately not re-targeted. Anthropic moved
+        // NFC normalisation behind a platform guard - `function i0($){return
+        // process.platform==="darwin"?$.normalize("NFC"):$}` - so the `X(await Y.realpath(z))`
+        // shape this matched no longer exists on Windows. The remaining bare async realpath
+        // wrappers (o84/Qh4 in 2.1.280) are consumed by path-containment helpers that take an
+        // `allowOutside` flag, i.e. they are sandbox boundary checks. Bypassing those would
+        // weaken a security check, not fix a path bug. The RaiDrive/UNC problem this existed for
+        // is handled by P3 + P3_cwd, which still apply.
         let p3bFound = false;
         ejsContent = ejsContent.replace(/async function ([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\)\{try\{return ([a-zA-Z0-9_$]+)\(await ([a-zA-Z0-9_$]+)\.realpath\([a-zA-Z0-9_$]+\)\)\}catch\{return ([a-zA-Z0-9_$]+)\([a-zA-Z0-9_$]+\)\}\}/g, (match, funcName, argName, cfFunc, soVar, cfFunc2) => {
             p3bFound = true;
             return `async function ${funcName}(${argName}){return ${cfFunc}(${argName})}`; 
         });
         if (p3bFound) console.log(`      \x1b[32m✔ P3b (Async session dir realpath): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P3b (Async session dir realpath): Not found\x1b[0m`);
+        else console.log(`      \x1b[33m⊘ P3b (Async session dir realpath): n/a - NFC moved behind a darwin guard; P3+P3_cwd cover it\x1b[0m`);
+        } else console.log(`      ${YELLOW}⊘ P3b: stage C (not applied at stage ${STAGE})${RESET}`);
         
 
         // P1_session_cmd: Register showSessionInfo in package.json commands
@@ -192,30 +287,65 @@ try {
             }
         } catch (e) {}
 
+        if (stage('B')) { // ---- stage B: P8 ----
         // P8: Advanced Multi-Window Usage status bar HTTP server & Session Size Monitor
         const usageIIFE = '(()=>{const _http=require("http");const _https=require("https");const _fs=require("fs");const _os=require("os");const _path=require("path");const _credsPath=_path.join(_os.homedir(),".claude",".credentials.json");const _markerPath=_path.join(_os.homedir(),".claude",".active_account");const _cfgPath=_path.join(_os.homedir(),".claude.json");function _readJsonSafe(p){try{return JSON.parse(_fs.readFileSync(p,"utf8"));}catch{return null;}}function _getActiveOrgId(){try{const creds=JSON.parse(_fs.readFileSync(_credsPath,"utf8"));return creds.organizationUuid;}catch{return undefined;}}function _getActiveAccountNum(){try{const n=_fs.readFileSync(_markerPath,"utf8").trim();if(n==="1"||n==="2")return n;}catch{}return null;}function _liveAccountUuid(){try{const c=_readJsonSafe(_cfgPath);return c&&c.oauthAccount&&c.oauthAccount.accountUuid||null;}catch{return null;}}function _slotAccountUuid(n){try{const b=_readJsonSafe(_path.join(_os.homedir(),".claude",".credentials_account"+n+".json"));return b&&b.oauthAccount&&b.oauthAccount.accountUuid||null;}catch{return null;}}function _syncLiveTokenToActiveSlot(){try{const live=_readJsonSafe(_credsPath);if(!live||!live.claudeAiOauth)return;const liveUuid=_liveAccountUuid();if(!liveUuid)return;for(const n of ["1","2"]){if(_slotAccountUuid(n)!==liveUuid)continue;const p=_path.join(_os.homedir(),".claude",".credentials_account"+n+".json");const bk=_readJsonSafe(p)||{};const cur=bk.claudeAiOauth||{};if(cur.accessToken!==live.claudeAiOauth.accessToken||cur.refreshToken!==live.claudeAiOauth.refreshToken){bk.claudeAiOauth=live.claudeAiOauth;if(live.organizationUuid)bk.organizationUuid=live.organizationUuid;_fs.writeFileSync(p,JSON.stringify(bk,null,2),"utf8");}return;}}catch{}}function _reconcileActiveSlot(){try{const live=_liveAccountUuid();if(!live)return;const u1=_slotAccountUuid("1"),u2=_slotAccountUuid("2");if(u1&&u2&&u1===u2)return;let real=null;if(u1&&u1===live)real="1";else if(u2&&u2===live)real="2";if(!real)return;if(_getActiveAccountNum()!==real){_fs.writeFileSync(_markerPath,real,"utf8");_lastKnownSlot=real;_usageFreshForSlot=null;}}catch{}}function _getUsageFile(){const accNum=_getActiveAccountNum();if(accNum==="1")return _path.join(_os.homedir(),".claude","usage_account1.json");if(accNum==="2")return _path.join(_os.homedir(),".claude","usage_account2.json");return _path.join(_os.homedir(),".claude","usage.json");}const _wu=Se.window.createStatusBarItem(Se.StatusBarAlignment.Right,9);_wu.command="claude-vscode.openUsage";_wu.tooltip="Claude usage";_wu.text="$(graph)Claude usage";_wu.show();e.subscriptions.push(_wu);e.subscriptions.push(Se.commands.registerCommand("claude-vscode.openUsage",()=>{ Se.env.openExternal(Se.Uri.parse("https://claude.ai/settings/usage"));}));const _wa=Se.window.createStatusBarItem(Se.StatusBarAlignment.Right,10);_wa.command="claude-vscode.swapAccount";_wa.tooltip="Swap Claude Account";_wa.text="$(account)Account Switcher";_wa.show();e.subscriptions.push(_wa);const _acc1Path=_path.join(_os.homedir(),".claude",".credentials_account1.json");const _acc2Path=_path.join(_os.homedir(),".claude",".credentials_account2.json");function _getAccountInfo(){ const accNum=_getActiveAccountNum(); if(accNum==="1")return{currentAcc:"Account 1",otherAccPath:_acc2Path,otherAccNum:"2"}; if(accNum==="2")return{currentAcc:"Account 2",otherAccPath:_acc1Path,otherAccNum:"1"}; return{currentAcc:"Unknown",otherAccPath:null,otherAccNum:null};}function _updateAccountSwitcher(){ const{currentAcc,otherAccPath,otherAccNum}=_getAccountInfo(); function _cd(ts){if(!ts)return "";const d=ts-Date.now();if(d<=0)return "(Expired!)";const days=Math.floor(d/86400000);if(days>0)return "("+days+"d)";return "("+Math.floor(d/3600000)+"h)";} const live=_readJsonSafe(_credsPath); const countdown=live&&live.claudeAiOauth?_cd(live.claudeAiOauth.refreshTokenExpiresAt):""; const cfg=_readJsonSafe(_cfgPath); const curName=cfg&&cfg.oauthAccount&&cfg.oauthAccount.displayName?cfg.oauthAccount.displayName:""; let label=currentAcc==="Unknown"?"Account ?":currentAcc; if(curName)label=label+": "+curName; _wa.text="$(account) "+label+(countdown?" "+countdown:""); const oth=otherAccPath?_readJsonSafe(otherAccPath):null; const othName=oth&&oth.oauthAccount&&oth.oauthAccount.displayName?" ("+oth.oauthAccount.displayName+")":""; const othCd=oth&&oth.claudeAiOauth?_cd(oth.claudeAiOauth.refreshTokenExpiresAt):""; _wa.tooltip=otherAccNum?("Signed in as "+label+" "+countdown+" - click to switch to Account "+otherAccNum+othName+" "+othCd):"Swap Claude Account";}function _isTokenExpired(oauthObj){ if(!oauthObj)return true; if(oauthObj.refreshTokenExpiresAt&&oauthObj.refreshTokenExpiresAt<Date.now())return true; if(!oauthObj.refreshToken&&oauthObj.expiresAt&&oauthObj.expiresAt<Date.now())return true; return false;}function _swapAccounts(silent=false){ const{currentAcc,otherAccPath,otherAccNum}=_getAccountInfo(); if(!otherAccPath||!_fs.existsSync(otherAccPath)){ if(!silent)Se.window.showErrorMessage("Cannot swap:Backup for account "+otherAccNum+" not found at "+otherAccPath); return; } try{ const currentCreds=JSON.parse(_fs.readFileSync(_credsPath,"utf8")); const currentCfg=_readJsonSafe(_cfgPath); const currentBackupPath=currentAcc==="Account 1"?_acc1Path:_acc2Path; if(currentAcc!=="Unknown"){ const bk={claudeAiOauth:currentCreds.claudeAiOauth}; if(currentCreds.organizationUuid)bk.organizationUuid=currentCreds.organizationUuid; if(currentCfg&&currentCfg.oauthAccount)bk.oauthAccount=currentCfg.oauthAccount; _fs.writeFileSync(currentBackupPath,JSON.stringify(bk,null,2),"utf8"); } const otherCreds=_readJsonSafe(otherAccPath); if(!otherCreds||!otherCreds.claudeAiOauth){ if(!silent)Se.window.showErrorMessage("Swap aborted: backup for account "+otherAccNum+" has no claudeAiOauth token."); return; } const targetExpired=_isTokenExpired(otherCreds.claudeAiOauth); currentCreds.claudeAiOauth=otherCreds.claudeAiOauth; if(targetExpired){ delete currentCreds.organizationUuid; }else{ if(otherCreds.organizationUuid)currentCreds.organizationUuid=otherCreds.organizationUuid; else delete currentCreds.organizationUuid; } _fs.writeFileSync(_credsPath,JSON.stringify(currentCreds,null,2),"utf8"); if(currentCfg){ try{_fs.writeFileSync(_cfgPath+".bak-swap-"+Date.now(),JSON.stringify(currentCfg,null,2),"utf8");}catch{} if(targetExpired){ delete currentCfg.oauthAccount; }else{ if(otherCreds.oauthAccount)currentCfg.oauthAccount=otherCreds.oauthAccount; else delete currentCfg.oauthAccount; } _fs.writeFileSync(_cfgPath,JSON.stringify(currentCfg,null,2),"utf8"); } if(!silent&&targetExpired){ Se.window.showWarningMessage("Account "+otherAccNum+" token has expired. Claude Code will prompt you to re-login. All identity data will be captured fresh."); }else if(!silent&&(!otherCreds.organizationUuid||!otherCreds.oauthAccount)){ Se.window.showWarningMessage("Account "+otherAccNum+" backup has no cached org identity. Claude will re-derive it from the token on load; swap away and back once to capture it."); } _fs.writeFileSync(_markerPath,otherAccNum,"utf8"); if(silent)return true; Se.commands.executeCommand("workbench.action.reloadWindow"); }catch(err){ if(!silent)Se.window.showErrorMessage("Swap failed:"+err.message); }}e.subscriptions.push(Se.commands.registerCommand("claude-vscode.swapAccount",()=>{ _swapAccounts(false);}));const _ws=Se.window.createStatusBarItem(Se.StatusBarAlignment.Right,8);_ws.command="claude-vscode.showSessionInfo";_ws.tooltip="Claude Session & JSONL File Size";_ws.text="$(comment-discussion) Session (0 KB)";_ws.show();e.subscriptions.push(_ws);let _curSessionId=null;let _curSessionTitle=null;let _curSessionFile=null;let _curSessionBytes=0;function _fmtSize(b){if(!b||b<=0)return "0 KB";if(b<1024)return b+" B";if(b<1024*1024)return(b/1024).toFixed(1)+" KB";return(b/(1024*1024)).toFixed(2)+" MB";}function _findJsonl(sid){ if(!sid)return null; const base=process.env.CLAUDE_CONFIG_DIR||_path.join(_os.homedir(),".claude"); const pdir=_path.join(base,"projects"); if(!_fs.existsSync(pdir))return null; try{const wf=Se.workspace.workspaceFolders;if(wf&&wf.length>0){const sanitized=String(wf[0].uri.fsPath).replace(/[^a-zA-Z0-9]/g,"-");const direct=_path.join(pdir,sanitized,sid+".jsonl");if(_fs.existsSync(direct))return direct;}}catch{} try{const dirs=_fs.readdirSync(pdir);for(const d of dirs){const cand=_path.join(pdir,d,sid+".jsonl");if(_fs.existsSync(cand))return cand;}}catch{} return null;}function _findLatestJsonl(){ const base=process.env.CLAUDE_CONFIG_DIR||_path.join(_os.homedir(),".claude"); const pdir=_path.join(base,"projects"); if(!_fs.existsSync(pdir))return null; let latest=null;let latestMtime=0; try{ const wf=Se.workspace.workspaceFolders; const targetDirs=[]; if(wf&&wf.length>0){const sanitized=String(wf[0].uri.fsPath).replace(/[^a-zA-Z0-9]/g,"-");targetDirs.push(_path.join(pdir,sanitized));} for(const d of _fs.readdirSync(pdir)){const full=_path.join(pdir,d);if(!targetDirs.includes(full))targetDirs.push(full);} for(const td of targetDirs){ if(!_fs.existsSync(td)||!_fs.statSync(td).isDirectory())continue; const files=_fs.readdirSync(td).filter(f=>f.endsWith(".jsonl")); for(const f of files){try{const fp=_path.join(td,f);const st=_fs.statSync(fp);if(st.mtimeMs>latestMtime){latestMtime=st.mtimeMs;latest={path:fp,sessionId:f.replace(/\\\\.jsonl$/,""),size:st.size,mtime:st.mtimeMs};}}catch{}} if(latest&&targetDirs.indexOf(td)===0)break; } }catch{} return latest;}function _updateSessionStatusBar(){ let fpath=_curSessionFile; if(!fpath&&_curSessionId){fpath=_findJsonl(_curSessionId);_curSessionFile=fpath;} if(!fpath&&!_curSessionId){const lat=_findLatestJsonl();if(lat){_curSessionId=lat.sessionId;fpath=lat.path;_curSessionFile=fpath;_curSessionBytes=lat.size;}} if(fpath&&_fs.existsSync(fpath)){try{const st=_fs.statSync(fpath);_curSessionBytes=st.size;}catch{}}else{_curSessionBytes=0;} const szStr=_fmtSize(_curSessionBytes); let title=_curSessionTitle; if(!title){title=_curSessionId?("Session "+_curSessionId.slice(0,8)):"New Session";} let displayTitle=title; if(displayTitle.length>22){displayTitle=displayTitle.slice(0,20)+"\\u2026";} const isHeavy=_curSessionBytes>=5*1024*1024; const isModerate=_curSessionBytes>=1*1024*1024; const icon=isHeavy?"$(warning)":(isModerate?"$(comment-discussion)":"$(comment-discussion)"); _ws.text=icon+" "+displayTitle+" ("+szStr+(isHeavy?" - Large!":"")+")"; let healthNote="\\\\u2705 **Context Health**: Healthy (< 1 MB). Minimal recurring token overhead."; if(isHeavy){healthNote="\\\\U0001F6A8 **Context Health**: Heavy Session (> 5 MB). Every message re-reads massive history. Run \\\\`/compact\\\\` or \\\\`/clear\\\\` to save quota!";} else if(isModerate){healthNote="\\\\u26A0\\\\uFE0F **Context Health**: Moderate Session (1\\u20135 MB, ~100k-250k tokens). Consider running \\\\`/compact\\\\` soon.";} const tip=new Se.MarkdownString(); tip.isTrusted=true;tip.supportThemeIcons=true; tip.appendMarkdown("### \\\\U0001F4AC Claude Code Active Session\\\\n\\\\n"); tip.appendMarkdown("**Title**: "+title+"\\\\n\\\\n"); tip.appendMarkdown("**Session ID**: \\\\`"+(_curSessionId||"None")+"\\\\`\\\\n\\\\n"); tip.appendMarkdown("**JSONL File Size**: "+szStr+" ("+_curSessionBytes.toLocaleString()+" bytes)\\\\n\\\\n"); if(fpath){tip.appendMarkdown("**File Path**: \\\\`"+fpath+"\\\\`\\\\n\\\\n");} tip.appendMarkdown(healthNote+"\\\\n\\\\n"); tip.appendMarkdown("---\\\\n*Click to open JSONL file or copy Session ID*"); _ws.tooltip=tip;}globalThis.__claudeActiveSessionUpdate=function(sid,title){ if(sid)_curSessionId=sid; if(title&&title!==_curSessionTitle)_curSessionTitle=title; _curSessionFile=null; _updateSessionStatusBar();};e.subscriptions.push(Se.commands.registerCommand("claude-vscode.showSessionInfo",async()=>{ const szStr=_fmtSize(_curSessionBytes); const items=[ {label:"$(file) Open Session JSONL File",description:szStr,detail:_curSessionFile||"No JSONL file found",action:"open_file"}, {label:"$(clippy) Copy Session ID",detail:_curSessionId||"No active session ID",action:"copy_id"}, {label:"$(clippy) Copy JSONL File Path",detail:_curSessionFile||"No JSONL file found",action:"copy_path"}, {label:"$(sparkle) Compact Session (/compact)",description:"Reduce context size while keeping summary",detail:"Type /compact in your Claude chat to compress large session context",action:"compact_info"} ]; const chosen=await Se.window.showQuickPick(items,{placeHolder:"Claude Session: "+(_curSessionTitle||_curSessionId||"Active Session")+" ("+szStr+")"}); if(!chosen)return; if(chosen.action==="open_file"&&_curSessionFile&&_fs.existsSync(_curSessionFile)){ try{const doc=await Se.workspace.openTextDocument(Se.Uri.file(_curSessionFile));await Se.window.showTextDocument(doc);}catch(err){Se.window.showErrorMessage("Could not open JSONL file: "+err.message);} }else if(chosen.action==="copy_id"&&_curSessionId){ await Se.env.clipboard.writeText(_curSessionId);Se.window.showInformationMessage("Copied Session ID to clipboard!"); }else if(chosen.action==="copy_path"&&_curSessionFile){ await Se.env.clipboard.writeText(_curSessionFile);Se.window.showInformationMessage("Copied JSONL path to clipboard!"); }else if(chosen.action==="compact_info"){ Se.window.showInformationMessage("To compact this session, type \'/compact\' in your Claude Code chat. This compresses the conversation history into a ~3-5 KB summary."); }}));function _fmtU(d){ try{ const p=Math.round(d.five_hour&&d.five_hour.utilization||0); const wk=Math.round(d.seven_day&&d.seven_day.utilization||0); let r=""; if(d.five_hour&&d.five_hour.resets_at){ const ms=new Date(d.five_hour.resets_at)-Date.now(); if(ms>0){const h=Math.floor(ms/3600000);const m=Math.floor((ms%3600000)/60000);if(h>0){r=" resets in "+h+" hr "+m+" min";}else{r=" resets in "+m+" min";}} } const blocks=Math.round(p/10); const full="\\u2588".repeat(Math.min(10,blocks)); const empty="\\u2591".repeat(Math.max(0,10-blocks)); return{text:full+empty+" "+p+"%"+r+" \\u2014 Weekly "+wk+"%",util:p}; }catch{return{text:"$(graph)Claude usage(err)",util:0};}}const _autoStatePath=_path.join(_os.homedir(),".claude",".autoswap_state.json");const _AUTO_THRESHOLD=95;const _AUTO_COOLDOWN_MS=1800000;let _usageFreshForSlot=null;function _winUtil(w){try{if(!w)return 0;if(w.resets_at&&new Date(w.resets_at).getTime()<=Date.now())return 0;return Math.round(w.utilization||0);}catch{return 0;}}function _peakUtil(d){try{return Math.max(_winUtil(d&&d.five_hour),_winUtil(d&&d.seven_day));}catch{return 0;}}function _otherHasHeadroom(n){try{const f=_path.join(_os.homedir(),".claude","usage_account"+n+".json");if(!_fs.existsSync(f))return true;return _peakUtil(_readJsonSafe(f))<_AUTO_THRESHOLD;}catch{return true;}}function _autoSwapAllowed(){try{const st=_readJsonSafe(_autoStatePath);if(st&&st.lastSwapAt&&(Date.now()-st.lastSwapAt)<_AUTO_COOLDOWN_MS)return false;}catch{}return true;}function _noteAutoSwap(){try{_fs.writeFileSync(_autoStatePath,JSON.stringify({lastSwapAt:Date.now()}),"utf8");}catch{}}let _autoReloadTimer=null;let _autoReloadFired=false;function _triggerAutoSwap(){ const info=_getAccountInfo(); if(!info.otherAccNum)return; if(!_autoSwapAllowed()){_autoReloadFired=true;return;} if(!_otherHasHeadroom(info.otherAccNum)){_autoReloadFired=true;Se.window.showWarningMessage("Claude quota reached, but Account "+info.otherAccNum+" is also at its limit - staying put.");return;} const swapped=_swapAccounts(true); if(swapped){ _noteAutoSwap();_autoReloadFired=true; _autoReloadTimer=setTimeout(()=>{Se.commands.executeCommand("workbench.action.reloadWindow");},5000); Se.window.showWarningMessage("Claude quota reached - swapped to Account "+info.otherAccNum+". Reloading in 5s...","Cancel Reload","Reload Now").then(sel=>{ if(sel==="Cancel Reload"){try{clearTimeout(_autoReloadTimer);}catch{}_swapAccounts(true);_updateAccountSwitcher();} else if(sel==="Reload Now"){try{clearTimeout(_autoReloadTimer);}catch{}Se.commands.executeCommand("workbench.action.reloadWindow");} }); }}function _fetchUsageNow(){ try{ const c=_readJsonSafe(_credsPath); if(!c||!c.claudeAiOauth||!c.claudeAiOauth.accessToken)return; const slot=_getActiveAccountNum(); const target=_getUsageFile(); const token=c.claudeAiOauth.accessToken; const req=_https.request("https://api.anthropic.com/api/oauth/usage",{method:"GET",headers:{"Authorization":"Bearer "+token,"anthropic-beta":"oauth-2025-04-20","Content-Type":"application/json"},timeout:15000},(r)=>{ let b="";r.on("data",(d)=>{b+=d;}); r.on("end",()=>{try{if(r.statusCode!==200)return;const u=JSON.parse(b);if(!u||!u.five_hour)return;if(_getActiveAccountNum()!==slot)return;_fs.writeFileSync(target,JSON.stringify(u),"utf8");_usageFreshForSlot=slot;_updateFromCacheRefactored();}catch{}}); }); req.on("error",()=>{});req.on("timeout",()=>{try{req.destroy();}catch{}});req.end(); const preq=_https.request("https://api.anthropic.com/api/oauth/profile",{method:"GET",headers:{"Authorization":"Bearer "+token,"anthropic-beta":"oauth-2025-04-20","Content-Type":"application/json"},timeout:15000},(pr)=>{ let pb="";pr.on("data",(d)=>{pb+=d;}); pr.on("end",()=>{ try{ if(pr.statusCode!==200)return; const pj=JSON.parse(pb); if(!pj||!pj.account||!pj.account.uuid)return; if(_getActiveAccountNum()!==slot)return; const curCfg=_readJsonSafe(_cfgPath)||{}; const liveOrg=pj.organization?.uuid||c.organizationUuid; const liveName=pj.account.display_name||pj.account.full_name||("Account "+slot); const synOauth={ accountUuid:pj.account.uuid, emailAddress:pj.account.email, organizationUuid:liveOrg, hasExtraUsageEnabled:pj.organization?.has_extra_usage_enabled||false, billingType:pj.organization?.billing_type||"stripe_subscription", accountCreatedAt:pj.account.created_at, subscriptionCreatedAt:pj.organization?.subscription_created_at, ccOnboardingFlags:pj.organization?.cc_onboarding_flags||{}, claudeCodeTrialEndsAt:pj.organization?.claude_code_trial_ends_at||null, claudeCodeTrialDurationDays:pj.organization?.claude_code_trial_duration_days||null, seatTier:pj.organization?.seat_tier||null, displayName:liveName, profileFetchedAt:Date.now(), organizationRole:"user", workspaceRole:null, organizationName:pj.organization?.name||"Organization", organizationType:pj.organization?.organization_type||"claude_pro", organizationRateLimitTier:pj.organization?.rate_limit_tier||"default_claude_ai", userRateLimitTier:pj.organization?.rate_limit_tier||"default_claude_ai" }; if(!curCfg.oauthAccount||curCfg.oauthAccount.accountUuid!==synOauth.accountUuid||curCfg.oauthAccount.displayName!==synOauth.displayName||curCfg.oauthAccount.organizationUuid!==liveOrg){ curCfg.oauthAccount=synOauth; _fs.writeFileSync(_cfgPath,JSON.stringify(curCfg,null,2),"utf8"); } if(liveOrg){ const freshCreds=_readJsonSafe(_credsPath); if(freshCreds&&freshCreds.organizationUuid!==liveOrg){ freshCreds.organizationUuid=liveOrg; _fs.writeFileSync(_credsPath,JSON.stringify(freshCreds,null,2),"utf8"); } } const curBkPath=slot==="1"?_acc1Path:_acc2Path; if(_fs.existsSync(curBkPath)){ const bk=_readJsonSafe(curBkPath)||{}; if(!bk.oauthAccount||bk.oauthAccount.accountUuid!==synOauth.accountUuid||bk.oauthAccount.displayName!==synOauth.displayName||bk.organizationUuid!==liveOrg){ bk.oauthAccount=synOauth; if(liveOrg)bk.organizationUuid=liveOrg; _fs.writeFileSync(curBkPath,JSON.stringify(bk,null,2),"utf8"); } } _updateAccountSwitcher(); }catch{} }); }); preq.on("error",()=>{});preq.on("timeout",()=>{try{preq.destroy();}catch{}});preq.end(); }catch{}}function _updateFromCacheRefactored(){ _updateAccountSwitcher();_updateSessionStatusBar(); const usageFile=_getUsageFile(); try{if(_fs.existsSync(usageFile)){const d=JSON.parse(_fs.readFileSync(usageFile,"utf8"));const res=_fmtU(d);if(res&&res.text){_wu.text="$(graph)Session "+res.text;}if(_usageFreshForSlot&&_usageFreshForSlot===_getActiveAccountNum()&&_peakUtil(d)>=_AUTO_THRESHOLD&&!_autoReloadFired){_triggerAutoSwap();}}}catch{}}_updateFromCacheRefactored();_fetchUsageNow();setInterval(_fetchUsageNow,120000);setInterval(_updateSessionStatusBar,3000);let _lastKnownSlot=_getActiveAccountNum();try{ _fs.watchFile(_markerPath,{interval:2000},()=>{ const newSlot=_getActiveAccountNum(); if(newSlot!==_lastKnownSlot){ _lastKnownSlot=newSlot; _usageFreshForSlot=null; _autoReloadFired=false; setTimeout(_fetchUsageNow,3000); _updateFromCacheRefactored(); } });}catch{}try{ _fs.watchFile(_credsPath,{interval:2000},()=>{ _usageFreshForSlot=null; _autoReloadFired=false; _reconcileActiveSlot(); _syncLiveTokenToActiveSlot(); setTimeout(_fetchUsageNow,1500); _updateFromCacheRefactored(); });}catch{}let _currentWatched=_getUsageFile();try{if(_fs.existsSync(_currentWatched)){_fs.watchFile(_currentWatched,{interval:2000},_updateFromCacheRefactored);}}catch{}setInterval(()=>{ const newWatched=_getUsageFile(); if(newWatched!==_currentWatched){try{_fs.unwatchFile(_currentWatched);}catch{}_currentWatched=newWatched;try{if(_fs.existsSync(_currentWatched)){_fs.watchFile(_currentWatched,{interval:2000},_updateFromCacheRefactored);}}catch{}} _updateFromCacheRefactored();},5000);const _srv=_http.createServer((req,res)=>{ try{_fs.appendFileSync(_path.join(_os.homedir(),".claude","usage-debug.log"),`[${new Date().toISOString()}]req:${req.method}${req.url}\\n`,"utf8");}catch{} if(req.method==="POST"&&req.url==="/usage"){ let b="";req.on("data",c=>{b+=c;}); req.on("end",()=>{ try{const parsed=JSON.parse(b);try{_fs.appendFileSync(_path.join(_os.homedir(),".claude","usage-debug.log"),`[${new Date().toISOString()}]POST parsed:usage=${!!parsed.usage}\\n`,"utf8");}catch{}if(parsed.usage){_fetchUsageNow();}}catch{} res.writeHead(200);res.end("ok"); }); }else{res.writeHead(404);res.end();}});_srv.on("error",(e)=>{});try{_srv.listen(54321,"127.0.0.1");}catch{}e.subscriptions.push({dispose:()=>{try{_srv.close();}catch{}try{_fs.unwatchFile(_currentWatched);}catch{}try{_fs.unwatchFile(_markerPath);}catch{}}});try{ const{spawn}=require("child_process"); const _syncPs=_path.join(_os.homedir(),".claude","projects","sync-shared.ps1"); if(_fs.existsSync(_syncPs)){ const _sc=spawn("powershell.exe",["-NoProfile","-ExecutionPolicy","Bypass","-File",_syncPs],{stdio:"ignore",windowsHide:true}); _sc.on("error",()=>{});_sc.unref(); }}catch(e){}})();';
         
-        ejsContent = applyRegex(ejsContent, /(let\s+[a-zA-Z0-9_$]+\s*=\s*([a-zA-Z0-9_$]+)\.window\.createStatusBarItem\([a-zA-Z0-9_$]+\.StatusBarAlignment\.Right\);.*?)(if\([a-zA-Z0-9_$]+\.subscriptions\.push\([a-zA-Z0-9_$]+\.commands\.registerCommand\("claude-vscode\.sidebar\.open"[,)]+)/, (match, p1, vscodeVar, p2) => {
-            return `${p1}${usageIIFE.replace(/Se\./g, `${vscodeVar}.`)}${p2}`;
+        // P8 must rewrite TWO minified identifiers, not one.
+        //
+        // `Se.` is the vscode namespace - that was always substituted. But the IIFE also hardcodes
+        // `e` as the ExtensionContext (`e.subscriptions.push(...)`), and that parameter is renamed
+        // every build. It happened to be `e` in 2.1.220 so this worked by luck; in 2.1.280 it is
+        // `$`, so the injected code threw a ReferenceError inside activate() and took the WHOLE
+        // extension down - no status bar, no account switcher, no sessions, nothing. That is the
+        // 2026-09-23 outage. Capture the context var from the same statement and substitute it.
+        let p8ctx = null;
+        ejsContent = applyRegex(ejsContent, /(let\s+[a-zA-Z0-9_$]+\s*=\s*([a-zA-Z0-9_$]+)\.window\.createStatusBarItem\([a-zA-Z0-9_$]+\.StatusBarAlignment\.Right\);.*?)(if\(([a-zA-Z0-9_$]+)\.subscriptions\.push\([a-zA-Z0-9_$]+\.commands\.registerCommand\("claude-vscode\.sidebar\.open"[,)]+)/, (match, p1, vscodeVar, p2, ctxVar) => {
+            p8ctx = ctxVar;
+            const body = usageIIFE
+                .replace(/Se\./g, `${vscodeVar}.`)
+                .replace(/\be\.subscriptions\b/g, `${ctxVar}.subscriptions`);
+            // The IIFE runs synchronously inside activate(). Unguarded, ANY throw in it aborts
+            // activation and the editor marks the whole extension failed - status bar, account
+            // switcher, session list and the Claude agent itself all die together. Guarded, the
+            // worst case is "enhancer features missing" and the reason is logged as
+            // "[enhancer] P8 failed:" in the window's renderer.log. Never inject it bare again.
+            const guarded = `try{${body.replace(/;\s*$/, '')}}catch(__e){try{console.error("[enhancer] P8 failed:",__e)}catch{}}`;
+            return `${p1}${guarded}${p2}`;
         }, 'P8 (Status bar server & Session size monitor)');
+        if (p8ctx) console.log(`      \x1b[36mℹ P8 bound to ExtensionContext '${p8ctx}' (guarded)\x1b[0m`);
+        } else console.log(`      ${YELLOW}⊘ P8: stage B (not applied at stage ${STAGE})${RESET}`);
 
-        // P13: Hook active session state updates to live status bar
-        ejsContent = applyRegex(ejsContent, /(updateSessionState\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{this\.sessionStates\.set\(([a-zA-Z0-9_$]+),\{sessionId:[a-zA-Z0-9_$]+,state:[a-zA-Z0-9_$]+,title:([a-zA-Z0-9_$]+)\}\)),(this\.broadcastSessionStates\(\)\})/, (match, p1, sidVar, titleVar, p2) => {
-            return `${p1};(globalThis.__claudeActiveSessionUpdate&&globalThis.__claudeActiveSessionUpdate(${sidVar},${titleVar}));${p2}`;
+        if (stage('C')) { // ---- stage C: P13, P13_panel, P12* (incl. P12_follow) ----
+        // The P13 hooks call into globalThis.__claudeActiveSessionUpdate, which P8 installs. They
+        // run inside the extension's own session-state methods, so a throw from the hook would
+        // break session state/panel switching. Wrap as an expression (P13_panel lands inside an
+        // if-condition, where a try statement cannot go).
+        const sessionHook = (sid, title) => `(()=>{try{globalThis.__claudeActiveSessionUpdate&&globalThis.__claudeActiveSessionUpdate(${sid},${title})}catch(__e){try{console.error("[enhancer] P13 hook failed:",__e)}catch{}}})()`;
+
+        // P13: Hook active session state updates to live status bar.
+        // 2.1.280 reshaped this: updateSessionState now takes 4 args, the body is wrapped in a
+        // guard, and the stored value is nested as {info:{sessionId,state,title},author}. The
+        // separator before broadcastSessionStates() also changed from ',' to ';'. Matched
+        // loosely (lazy gap + optional guard) so a further reshuffle does not silently break it.
+        ejsContent = applyRegex(ejsContent, /(updateSessionState\([^)]*\)\{[\s\S]{0,140}?this\.sessionStates\.set\(([a-zA-Z0-9_$]+),\{info:\{sessionId:[a-zA-Z0-9_$]+,state:[a-zA-Z0-9_$]+,title:([a-zA-Z0-9_$]+)\},author:[a-zA-Z0-9_$]+\}\));(this\.broadcastSessionStates\(\)\})/, (match, p1, sidVar, titleVar, p2) => {
+            return `${p1};${sessionHook(sidVar, titleVar)};${p2}`;
         }, 'P13 (Session state hook)');
 
-        ejsContent = applyRegex(ejsContent, /(setActivePanel\([a-zA-Z0-9_$]+\)\{for\(let\[([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\]of this\.sessionPanels\)if\(\3===[a-zA-Z0-9_$]+\)\{this\.activeSessionId=\2),(this\.broadcastSessionStates\(\);return\}\})/, (match, p1, sidVar, panelVar, p2) => {
-            return `${p1};(globalThis.__claudeActiveSessionUpdate&&globalThis.__claudeActiveSessionUpdate(${sidVar},this.sessionStates.get(${sidVar})?.title));${p2}`;
+        // P13_panel: 2.1.280 moved the assignment inside an if-condition comma expression
+        // (`if(this.activeSessionId=Q,!(...))`) and gained an unread-clearing branch, so there is
+        // no longer a trailing `broadcastSessionStates();return}` to anchor on. Inject into the
+        // comma expression right after the assignment - evaluation order is left to right.
+        // Title is now under .info.title, not .title.
+        ejsContent = applyRegex(ejsContent, /(setActivePanel\([^)]*\)\{for\(let\[([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\]of this\.sessionPanels\)if\(\3===[a-zA-Z0-9_$]+\)\{if\(this\.activeSessionId=\2),/, (match, p1, sidVar, panelVar) => {
+            // arrow IIFE keeps `this` bound to the session manager
+            return `${p1},${sessionHook(sidVar, `this.sessionStates.get(${sidVar})?.info?.title`)},`;
         }, 'P13_panel (Active panel hook)');
         
-        // P11: Session grouping in sidebar
-        let p11Found = false;
-        wjsContent = wjsContent.replace(/([a-zA-Z0-9_$]+)\.map\(\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)=>\{let ([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)===([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)===([a-zA-Z0-9_$]+)\.sessionId\.value;return ([a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,\{ref:\([a-zA-Z0-9_$]+\)=>\{if\([a-zA-Z0-9_$]+\)[a-zA-Z0-9_$]+\.current\.set\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\}.+?currentCwd:[a-zA-Z0-9_$]+\},[a-zA-Z0-9_$]+\.sessionId\.value\?\?[a-zA-Z0-9_$]+\))\}\)/g, (match, arr, sessionVar, indexVar, isFocusedVar, idxCompare1, idxCompare2, isRenamingVar, renameCompare1, renameCompare2, itemCode) => {
-            p11Found = true;
-            return `(()=>{let _gr={},_ug=[];${arr}.forEach((${sessionVar},${indexVar})=>{let _m=/^\\[([^\\]]+)\\]/.exec(typeof ${sessionVar}.summary==="string"?${sessionVar}.summary:${sessionVar}.summary?.value??"");if(_m)(_gr[_m[1]]=_gr[_m[1]]||[]).push({${sessionVar},${indexVar}});else _ug.push({${sessionVar},${indexVar}})});let _out=[];Object.keys(_gr).sort().forEach(_gn=>{_out.push(b("div",{key:"g_"+_gn,style:{fontWeight:"bold",padding:"4px 8px",cursor:"pointer",userSelect:"none"},onClick:(e)=>{let nx=e.currentTarget.nextSibling;nx.style.display=nx.style.display==="none"?"":"none"},children:"\\u25BE "+_gn+" ("+_gr[_gn].length+")"}));_out.push(b("div",{key:"gc_"+_gn,style:{paddingLeft:"8px"},children:_gr[_gn].map(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;return ${itemCode}})}))});_ug.forEach(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;_out.push(${itemCode})});return _out})()`;
-        });
-        if (p11Found) console.log(`      \x1b[32m✔ P11 (Session Grouping support): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P11 (Session Grouping support): Not found\x1b[0m`);
+        // P11 (session grouping by [GroupName] title prefix) - RETIRED 2026-09-23 for 2.1.280.
+        // 2.1.280 ships native session groups ("Add Session Tab to Group" / "New group...", persisted
+        // per project and rendered in the session list), which supersede the prefix hack. The old
+        // target (an inline .map() render) no longer exists either. See git history for the code.
 
         // P12 (ext): isShared symlink check
         //
@@ -252,7 +382,26 @@ try {
             return `isCurrentWorkspace:${rQe}(${oVar}.cwd,this.cwd),isShared:${expr},...${sVar}}})`;
         });
         if (p12ExtFound) console.log(`      \x1b[32m✔ P12_ext (isShared field detection): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P12_ext (isShared field detection): Not found\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P12_ext (isShared field detection): Not found\x1b[0m`); failures.push(`${appName}: P12_ext - not found`); }
+
+        // P12_follow: let the session list read SHARED (symlinked) sessions again.
+        //
+        // 2.1.280 added symlink hardening to the session-file reader: on POSIX it opens with
+        // O_NOFOLLOW, and on Windows (no O_NOFOLLOW) it falls back to
+        //     if(!(await fs.lstat(file)).isFile())return null
+        // lstat does not follow links, so every symlinked .jsonl reads as "not a file" and is
+        // silently dropped. Shared chats live in projects\General\ and are symlinked into every
+        // project by sync-shared.ps1, so ALL of them vanished from every project's list (verified
+        // 2026-09-23: 19 candidates in GetHome, all 15 symlinks dropped at this check).
+        // Relax it narrowly: a symlink is accepted only if it resolves to a regular file INSIDE the
+        // projects root. Anything else is still refused, so the hardening stays in force.
+        let p12Follow = false;
+        ejsContent = ejsContent.replace(/if\(([a-zA-Z0-9_$]+)===([a-zA-Z0-9_$]+)\.constants\.O_RDONLY\)\{if\(!\(await ([a-zA-Z0-9_$]+)\.lstat\(([a-zA-Z0-9_$]+)\)\)\.isFile\(\)\)return null\}/g, (match, flagVar, fsConst, fsp, file) => {
+            p12Follow = true;
+            return `if(${flagVar}===${fsConst}.constants.O_RDONLY){let _l=await ${fsp}.lstat(${file});if(!_l.isFile()){if(!_l.isSymbolicLink())return null;let _p=require("path"),_root=_p.join(process.env.CLAUDE_CONFIG_DIR||_p.join(require("os").homedir(),".claude"),"projects");try{_root=await ${fsp}.realpath(_root)}catch{}let _t=await ${fsp}.realpath(${file});if(!_t.toLowerCase().startsWith(_root.toLowerCase()+_p.sep)||!(await ${fsp}.stat(_t)).isFile())return null}}`;
+        });
+        if (p12Follow) console.log(`      \x1b[32m✔ P12_follow (list symlinked shared sessions): Applied\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P12_follow (list symlinked shared sessions): Not found - SHARED CHATS WILL NOT LIST\x1b[0m`); failures.push(`${appName}: P12_follow - not found`); }
 
         // P12 (wjs): isShared signal setup
         let p12WjsA = false;
@@ -261,7 +410,7 @@ try {
             return `teleportedFromSessionId=${lt}(void 0);isShared=${lt}(!1);teleportedMessageCount`;
         });
         if (p12WjsA) console.log(`      \x1b[32m✔ P12_wjs_a (isShared state signal): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P12_wjs_a (isShared state signal): Not found\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P12_wjs_a (isShared state signal): Not found\x1b[0m`); failures.push(`${appName}: P12_wjs_a - not found`); }
 
         let p12WjsB = false;
         wjsContent = wjsContent.replace(/\)([a-zA-Z0-9_$]+)\.teleportedFromSessionId\.value=([a-zA-Z0-9_$]+)\.teleportedFromSessionId;if\(\2\.teleportedMessageCount/g, (match, nVar, eVar) => {
@@ -269,16 +418,20 @@ try {
             return `)${nVar}.teleportedFromSessionId.value=${eVar}.teleportedFromSessionId;if(${eVar}.isShared!==void 0)${nVar}.isShared.value=${eVar}.isShared;if(${eVar}.teleportedMessageCount`;
         });
         if (p12WjsB) console.log(`      \x1b[32m✔ P12_wjs_b (isShared server assignment): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P12_wjs_b (isShared server assignment): Not found\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P12_wjs_b (isShared server assignment): Not found\x1b[0m`); failures.push(`${appName}: P12_wjs_b - not found`); }
         
         // P12 (wjs): italic render
         let p12WjsC = false;
-        wjsContent = wjsContent.replace(/b\("span",\{className:([a-zA-Z0-9_$]+)\.sessionName,children:([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\),([a-zA-Z0-9_$]+)\)\}\)/g, (match, gn, yQe, FD, tVar, rVar) => {
+        // 2.1.280: the createElement alias changed (b -> F) and the call gained a trailing key
+        // argument (,"view"). Capture both instead of hardcoding, so the next rename is survivable.
+        wjsContent = wjsContent.replace(/([a-zA-Z0-9_$]+)\("span",\{className:([a-zA-Z0-9_$]+)\.sessionName,children:([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\),([a-zA-Z0-9_$]+)\)\}(,"[a-z]+")?\)/g, (match, createFn, gn, yQe, FD, tVar, rVar, keyArg) => {
             p12WjsC = true;
-            return `b("span",{className:${gn}.sessionName,children:(()=>{let _t=${FD}(${tVar}),_m=/^(\\[[^\\]]+\\])(.*)/.exec(_t);if(_m&&${tVar}.isShared&&${tVar}.isShared.value)return[b("em",{key:"sh1",children:${yQe}(_m[1],${rVar})}),${yQe}(_m[2],${rVar})];return ${yQe}(_t,${rVar})})()})`;
+            const key = keyArg || '';
+            return `${createFn}("span",{className:${gn}.sessionName,children:(()=>{let _t=${FD}(${tVar}),_m=/^(\\[[^\\]]+\\])(.*)/.exec(_t);if(_m&&${tVar}.isShared&&${tVar}.isShared.value)return[${createFn}("em",{key:"sh1",children:${yQe}(_m[1],${rVar})}),${yQe}(_m[2],${rVar})];return ${yQe}(_t,${rVar})})()}${key})`;
         });
         if (p12WjsC) console.log(`      \x1b[32m✔ P12_wjs_c (isShared italic rendering): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P12_wjs_c (isShared italic rendering): Not found\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P12_wjs_c (isShared italic rendering): Not found\x1b[0m`); failures.push(`${appName}: P12_wjs_c - not found`); }
+        } else console.log(`      ${YELLOW}⊘ P13, P13_panel, P12*: stage C (not applied at stage ${STAGE})${RESET}`);
         
         fs.writeFileSync(wjs, wjsContent);
         checkSyntax(wjs, "webview patches");
@@ -352,9 +505,23 @@ try {
     console.log(`\n${BOLD}[7/7] Setting up automated session backup...${RESET}`);
     console.log(`  ${GREEN}✔ Backup script & Scheduled task preserved${RESET}`);
     
-    console.log(`\n${GREEN}${BOLD}====================================================`);
-    console.log(`🎉 ENHANCER INSTALLATION COMPLETED SUCCESSFULLY!`);
-    console.log(`====================================================${RESET}\n`);
+    if (failures.length) {
+        console.log(`\n${RED}${BOLD}====================================================`);
+        console.log(`⚠ INSTALLER FINISHED WITH ${failures.length} PATCH FAILURE(S)`);
+        console.log(`====================================================${RESET}`);
+        failures.forEach(f => console.log(`  ${RED}✘ ${f}${RESET}`));
+    } else {
+        console.log(`\n${GREEN}${BOLD}====================================================`);
+        console.log(`✔ All stage-${STAGE} patches injected`);
+        console.log(`====================================================${RESET}`);
+    }
+    // "Injected" is not "working". Only a restart proves anything.
+    console.log(`\n${BOLD}Next:${RESET} restart the editor, then check the status bar, an account swap and a POPULATED`);
+    console.log(`session list. If anything is missing, read the NEWEST window's renderer.log for "[enhancer]"`);
+    console.log(`and exthost/exthost.log for "Activating extension Anthropic.claude-code failed".`);
+    if (STAGE !== 'C') console.log(`${YELLOW}Stage ${STAGE} only - rerun with the next ENHANCER_STAGE once this one is verified.${RESET}`);
+    console.log('');
+    if (failures.length) process.exitCode = 2;
     
 } catch (error) {
     console.error(`\n${RED}${BOLD}====================================================`);
