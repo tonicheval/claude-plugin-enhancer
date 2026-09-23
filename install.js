@@ -141,7 +141,7 @@ try {
             return `(${p1}[0]||${p2}.homedir()).normalize("NFC")`;
         });
         if (p2Found) console.log(`      \x1b[32m✔ P2 (Webview realpath): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P2 (Webview realpath): Not found\x1b[0m`);
+        else console.log(`      \x1b[33m⊘ P2 (Webview realpath): n/a - no realpathSync(...).normalize("NFC") in this build\x1b[0m`);
 
         // P3: Extension realpathSync bypass (Network drive & hash fix for backend)
         let p3Found = false;
@@ -165,14 +165,23 @@ try {
         if (p3cwdFound) console.log(`      \x1b[32m✔ P3_cwd (Normalize global cwd): Applied\x1b[0m`);
         else console.log(`      \x1b[31m✘ P3_cwd (Normalize global cwd): Not found\x1b[0m`);
         
-        // P3b: Kie() async realpath bypass (hangs on mapped/network drives when listing sessions)
+        // P3b: async realpath bypass (hung on mapped/network drives when listing sessions).
+        //
+        // NOT APPLICABLE from 2.1.280 onward, and deliberately not re-targeted. Anthropic moved
+        // NFC normalisation behind a platform guard - `function i0($){return
+        // process.platform==="darwin"?$.normalize("NFC"):$}` - so the `X(await Y.realpath(z))`
+        // shape this matched no longer exists on Windows. The remaining bare async realpath
+        // wrappers (o84/Qh4 in 2.1.280) are consumed by path-containment helpers that take an
+        // `allowOutside` flag, i.e. they are sandbox boundary checks. Bypassing those would
+        // weaken a security check, not fix a path bug. The RaiDrive/UNC problem this existed for
+        // is handled by P3 + P3_cwd, which still apply.
         let p3bFound = false;
         ejsContent = ejsContent.replace(/async function ([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\)\{try\{return ([a-zA-Z0-9_$]+)\(await ([a-zA-Z0-9_$]+)\.realpath\([a-zA-Z0-9_$]+\)\)\}catch\{return ([a-zA-Z0-9_$]+)\([a-zA-Z0-9_$]+\)\}\}/g, (match, funcName, argName, cfFunc, soVar, cfFunc2) => {
             p3bFound = true;
             return `async function ${funcName}(${argName}){return ${cfFunc}(${argName})}`; 
         });
         if (p3bFound) console.log(`      \x1b[32m✔ P3b (Async session dir realpath): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P3b (Async session dir realpath): Not found\x1b[0m`);
+        else console.log(`      \x1b[33m⊘ P3b (Async session dir realpath): n/a - NFC moved behind a darwin guard; P3+P3_cwd cover it\x1b[0m`);
         
 
         // P1_session_cmd: Register showSessionInfo in package.json commands
@@ -199,23 +208,45 @@ try {
             return `${p1}${usageIIFE.replace(/Se\./g, `${vscodeVar}.`)}${p2}`;
         }, 'P8 (Status bar server & Session size monitor)');
 
-        // P13: Hook active session state updates to live status bar
-        ejsContent = applyRegex(ejsContent, /(updateSessionState\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\{this\.sessionStates\.set\(([a-zA-Z0-9_$]+),\{sessionId:[a-zA-Z0-9_$]+,state:[a-zA-Z0-9_$]+,title:([a-zA-Z0-9_$]+)\}\)),(this\.broadcastSessionStates\(\)\})/, (match, p1, sidVar, titleVar, p2) => {
+        // P13: Hook active session state updates to live status bar.
+        // 2.1.280 reshaped this: updateSessionState now takes 4 args, the body is wrapped in a
+        // guard, and the stored value is nested as {info:{sessionId,state,title},author}. The
+        // separator before broadcastSessionStates() also changed from ',' to ';'. Matched
+        // loosely (lazy gap + optional guard) so a further reshuffle does not silently break it.
+        ejsContent = applyRegex(ejsContent, /(updateSessionState\([^)]*\)\{[\s\S]{0,140}?this\.sessionStates\.set\(([a-zA-Z0-9_$]+),\{info:\{sessionId:[a-zA-Z0-9_$]+,state:[a-zA-Z0-9_$]+,title:([a-zA-Z0-9_$]+)\},author:[a-zA-Z0-9_$]+\}\));(this\.broadcastSessionStates\(\)\})/, (match, p1, sidVar, titleVar, p2) => {
             return `${p1};(globalThis.__claudeActiveSessionUpdate&&globalThis.__claudeActiveSessionUpdate(${sidVar},${titleVar}));${p2}`;
         }, 'P13 (Session state hook)');
 
-        ejsContent = applyRegex(ejsContent, /(setActivePanel\([a-zA-Z0-9_$]+\)\{for\(let\[([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\]of this\.sessionPanels\)if\(\3===[a-zA-Z0-9_$]+\)\{this\.activeSessionId=\2),(this\.broadcastSessionStates\(\);return\}\})/, (match, p1, sidVar, panelVar, p2) => {
-            return `${p1};(globalThis.__claudeActiveSessionUpdate&&globalThis.__claudeActiveSessionUpdate(${sidVar},this.sessionStates.get(${sidVar})?.title));${p2}`;
+        // P13_panel: 2.1.280 moved the assignment inside an if-condition comma expression
+        // (`if(this.activeSessionId=Q,!(...))`) and gained an unread-clearing branch, so there is
+        // no longer a trailing `broadcastSessionStates();return}` to anchor on. Inject into the
+        // comma expression right after the assignment - evaluation order is left to right.
+        // Title is now under .info.title, not .title.
+        ejsContent = applyRegex(ejsContent, /(setActivePanel\([^)]*\)\{for\(let\[([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\]of this\.sessionPanels\)if\(\3===[a-zA-Z0-9_$]+\)\{if\(this\.activeSessionId=\2),/, (match, p1, sidVar, panelVar) => {
+            return `${p1},(globalThis.__claudeActiveSessionUpdate&&globalThis.__claudeActiveSessionUpdate(${sidVar},this.sessionStates.get(${sidVar})?.info?.title)),`;
         }, 'P13_panel (Active panel hook)');
         
-        // P11: Session grouping in sidebar
+        // P11: Session grouping in sidebar ([GroupName] prefix -> collapsible folder header).
+        //
+        // BROKEN BY 2.1.280 and NOT re-targeted - this needs a redesign, not a new regex.
+        // The patch works by replacing an inline `sessions.map((s,i)=>{...return ITEM})` with an
+        // IIFE that buckets by prefix and emits header + indented children. In 2.1.280 that
+        // inline callback no longer exists: the item render was extracted into a standalone
+        // renderer (`M11=(s)=>{let i=VF0.get(s);...return F(ITEM,{...})}`) driven by an
+        // index Map, so there is no map callback left to wrap. Re-implementing grouping means
+        // hooking wherever that renderer is applied to the list, and confirming the list is not
+        // virtualised first - naive grouping would break a windowed list.
+        //
+        // Impact is cosmetic and isolated: sessions still list and sort normally, they just do
+        // not nest under [GroupName] headers. Everything isShared-related still works (P12_ext,
+        // P12_wjs_a/b/c all apply), so shared sessions remain visually marked.
         let p11Found = false;
         wjsContent = wjsContent.replace(/([a-zA-Z0-9_$]+)\.map\(\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)=>\{let ([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)===([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)=([a-zA-Z0-9_$]+)===([a-zA-Z0-9_$]+)\.sessionId\.value;return ([a-zA-Z0-9_$]+\([a-zA-Z0-9_$]+,\{ref:\([a-zA-Z0-9_$]+\)=>\{if\([a-zA-Z0-9_$]+\)[a-zA-Z0-9_$]+\.current\.set\([a-zA-Z0-9_$]+,[a-zA-Z0-9_$]+\)\}.+?currentCwd:[a-zA-Z0-9_$]+\},[a-zA-Z0-9_$]+\.sessionId\.value\?\?[a-zA-Z0-9_$]+\))\}\)/g, (match, arr, sessionVar, indexVar, isFocusedVar, idxCompare1, idxCompare2, isRenamingVar, renameCompare1, renameCompare2, itemCode) => {
             p11Found = true;
             return `(()=>{let _gr={},_ug=[];${arr}.forEach((${sessionVar},${indexVar})=>{let _m=/^\\[([^\\]]+)\\]/.exec(typeof ${sessionVar}.summary==="string"?${sessionVar}.summary:${sessionVar}.summary?.value??"");if(_m)(_gr[_m[1]]=_gr[_m[1]]||[]).push({${sessionVar},${indexVar}});else _ug.push({${sessionVar},${indexVar}})});let _out=[];Object.keys(_gr).sort().forEach(_gn=>{_out.push(b("div",{key:"g_"+_gn,style:{fontWeight:"bold",padding:"4px 8px",cursor:"pointer",userSelect:"none"},onClick:(e)=>{let nx=e.currentTarget.nextSibling;nx.style.display=nx.style.display==="none"?"":"none"},children:"\\u25BE "+_gn+" ("+_gr[_gn].length+")"}));_out.push(b("div",{key:"gc_"+_gn,style:{paddingLeft:"8px"},children:_gr[_gn].map(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;return ${itemCode}})}))});_ug.forEach(({${sessionVar},${indexVar}})=>{let ${isFocusedVar}=${indexVar}===${idxCompare2},${isRenamingVar}=${renameCompare1}===${sessionVar}.sessionId.value;_out.push(${itemCode})});return _out})()`;
         });
         if (p11Found) console.log(`      \x1b[32m✔ P11 (Session Grouping support): Applied\x1b[0m`);
-        else console.log(`      \x1b[31m✘ P11 (Session Grouping support): Not found\x1b[0m`);
+        else console.log(`      \x1b[33m⊘ P11 (Session Grouping support): needs redesign - list render extracted from inline .map() in 2.1.280 (cosmetic)\x1b[0m`);
 
         // P12 (ext): isShared symlink check
         //
@@ -273,9 +304,12 @@ try {
         
         // P12 (wjs): italic render
         let p12WjsC = false;
-        wjsContent = wjsContent.replace(/b\("span",\{className:([a-zA-Z0-9_$]+)\.sessionName,children:([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\),([a-zA-Z0-9_$]+)\)\}\)/g, (match, gn, yQe, FD, tVar, rVar) => {
+        // 2.1.280: the createElement alias changed (b -> F) and the call gained a trailing key
+        // argument (,"view"). Capture both instead of hardcoding, so the next rename is survivable.
+        wjsContent = wjsContent.replace(/([a-zA-Z0-9_$]+)\("span",\{className:([a-zA-Z0-9_$]+)\.sessionName,children:([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+)\),([a-zA-Z0-9_$]+)\)\}(,"[a-z]+")?\)/g, (match, createFn, gn, yQe, FD, tVar, rVar, keyArg) => {
             p12WjsC = true;
-            return `b("span",{className:${gn}.sessionName,children:(()=>{let _t=${FD}(${tVar}),_m=/^(\\[[^\\]]+\\])(.*)/.exec(_t);if(_m&&${tVar}.isShared&&${tVar}.isShared.value)return[b("em",{key:"sh1",children:${yQe}(_m[1],${rVar})}),${yQe}(_m[2],${rVar})];return ${yQe}(_t,${rVar})})()})`;
+            const key = keyArg || '';
+            return `${createFn}("span",{className:${gn}.sessionName,children:(()=>{let _t=${FD}(${tVar}),_m=/^(\\[[^\\]]+\\])(.*)/.exec(_t);if(_m&&${tVar}.isShared&&${tVar}.isShared.value)return[${createFn}("em",{key:"sh1",children:${yQe}(_m[1],${rVar})}),${yQe}(_m[2],${rVar})];return ${yQe}(_t,${rVar})})()}${key})`;
         });
         if (p12WjsC) console.log(`      \x1b[32m✔ P12_wjs_c (isShared italic rendering): Applied\x1b[0m`);
         else console.log(`      \x1b[31m✘ P12_wjs_c (isShared italic rendering): Not found\x1b[0m`);
