@@ -114,6 +114,8 @@ Simply run the installer and it will configure the patched files for whichever e
 | P14 | C | Never auto-archive shared chats |
 | P15 | C | `[Name]` title → native group |
 | P16 | C | Heal chat titles that drifted out of the 64 KB read window; fix stale title sidecars |
+| P17 | C | Boot watchdog for chat panels restored on a cold start: some restored webviews never start (a race; a different chat each time; clicking the tab does not revive it). If a visible panel is silent for 8 s its content is reloaded, and 8 s later it is closed and the same chat reopened. Panels that start normally are never touched |
+| P_diag | off | Diagnostic only (`ENHANCER_DIAG=1`): traces chat-panel restore to `~/.claude/panel-restore-diag.log` (restore call, first message, visibility, dispose) |
 
 **Retired for 2.1.280:** P11 (the old `[Name]` grouping hack — replaced by native groups via P15). P1 was retired on 23 Sep on the assumption it had gone native and **restored on 24 Sep**: 2.1.280 only enables the sessions list once `activate()` runs, which is too late for a cold start. Lesson: check the state *before* activation, not just after. P2 and P3b no longer match anything on 2.1.280 and report `⊘ n/a`. Features P1–P7 and P9–P10 of the original set have been native since v2.1.206.
 

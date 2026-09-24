@@ -680,6 +680,53 @@ try {
         if (p16) console.log(`      \x1b[32m✔ P16 (heal drifted chat titles): Applied\x1b[0m`);
         else { console.log(`      \x1b[31m✘ P16 (heal drifted chat titles): Not found\x1b[0m`); failures.push(`${appName}: P16 - not found`); }
 
+        // P17: boot watchdog for chat panels restored on a cold start.
+        // Traced 2026-09-24 (P_diag): the editor restores every open chat panel and the extension
+        // gives each its HTML, but on a cold start some webviews never start - no message at all,
+        // and clicking the tab again does not revive them. Which chat loses the race changes from
+        // start to start. Only a NEW webview fixes it (the user had to close + reopen by hand).
+        // So: if a restored panel has not sent its first message 8 s after being visible, reload
+        // its HTML; if it is still silent 8 s later, close it and reopen the same chat through the
+        // command the session list's "open" uses (claude-vscode.editor.open). A panel that has
+        // spoken is never touched; at most one reload + one reopen per panel.
+        let p17 = false;
+        ejsContent = ejsContent.replace(/([a-zA-Z0-9_$]+)\.window\.registerWebviewPanelSerializer\("claudeVSCodePanel",\{async deserializeWebviewPanel\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)\{/, (match, vs, panel, state) => {
+            p17 = true;
+            return `${match}try{const __sid=(${state}&&typeof ${state}.sessionID==="string")?${state}.sessionID:null;let __spoke=false,__tries=0,__t=null;` +
+                `${panel}.webview.onDidReceiveMessage(()=>{__spoke=true});` +
+                `const __check=()=>{__t=null;if(__spoke)return;if(!${panel}.visible)return;__tries++;` +
+                    `if(__tries===1){try{console.warn("[enhancer] P17 chat panel silent after 8s, reloading its content:",__sid);${panel}.webview.html=${panel}.webview.html+"<!-- enhancer P17 reload -->"}catch{}__t=setTimeout(__check,8000);return}` +
+                    `if(__tries===2&&__sid){try{console.warn("[enhancer] P17 chat panel still silent, reopening:",__sid)}catch{}try{${panel}.dispose()}catch{}` +
+                    `setTimeout(()=>{try{Promise.resolve(${vs}.commands.executeCommand("claude-vscode.editor.open",__sid,void 0,void 0,void 0,!0,{programmatic:"honor-preferred-location"})).catch(()=>{})}catch{}},300)}};` +
+                `__t=setTimeout(__check,8000);` +
+                // a webview only starts once shown, so becoming visible restarts the 8 s clock
+                `${panel}.onDidChangeViewState(e=>{if(!__spoke&&e.webviewPanel.visible&&__tries<2){if(__t)clearTimeout(__t);__t=setTimeout(__check,8000)}});` +
+                `${panel}.onDidDispose(()=>{__spoke=true;if(__t){clearTimeout(__t);__t=null}})}catch{}`;
+        });
+        if (p17) console.log(`      \x1b[32m✔ P17 (restored chat panel boot watchdog): Applied\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P17 (restored chat panel boot watchdog): Not found\x1b[0m`); failures.push(`${appName}: P17 - not found`); }
+
+        // P_diag (DIAGNOSTIC ONLY, off unless ENHANCER_DIAG=1): trace chat-panel restore on startup.
+        // Some restored chat panels come up blank on a cold start and never send a single message.
+        // For each panel the editor restores, log to ~/.claude/panel-restore-diag.log when
+        // deserializeWebviewPanel is called (session, visible, active, column), when the panel's
+        // webview sends its first message (= it booted), view-state changes and disposal. Lines
+        // carry the extension-host pid, which maps to a window via exthost.log. No behaviour change.
+        if (process.env.ENHANCER_DIAG === '1') {
+            let pDiag = false;
+            ejsContent = ejsContent.replace(/registerWebviewPanelSerializer\("claudeVSCodePanel",\{async deserializeWebviewPanel\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)\{/, (match, panel, state) => {
+                pDiag = true;
+                return `${match}try{const __f=require("fs"),__p=require("path"),__L=__p.join(require("os").homedir(),".claude","panel-restore-diag.log"),__NL=String.fromCharCode(10);` +
+                    `const __w=m=>{try{__f.appendFileSync(__L,new Date().toISOString()+" pid"+process.pid+" "+m+__NL)}catch{}};` +
+                    `const __s=(${state}&&${state}.sessionID)||"?";` +
+                    `__w("deserialize session="+__s+" visible="+${panel}.visible+" active="+${panel}.active+" col="+${panel}.viewColumn+" title="+JSON.stringify(${panel}.title));` +
+                    `let __b=false;${panel}.webview.onDidReceiveMessage(()=>{if(!__b){__b=true;__w("first-message session="+__s)}});` +
+                    `${panel}.onDidChangeViewState(e=>__w("viewstate session="+__s+" visible="+e.webviewPanel.visible+" active="+e.webviewPanel.active));` +
+                    `${panel}.onDidDispose(()=>__w("disposed session="+__s))}catch{}`;
+            });
+            console.log(pDiag ? `      \x1b[36mℹ P_diag (panel-restore trace -> ~/.claude/panel-restore-diag.log): Applied\x1b[0m` : `      \x1b[33m⚠ P_diag: anchor not found\x1b[0m`);
+        }
+
         // P12 (wjs): isShared signal setup
         let p12WjsA = false;
         wjsContent = wjsContent.replace(/teleportedFromSessionId=([a-zA-Z0-9_$]+)\(\(?void 0\)?\);teleportedMessageCount/g, (match, lt) => {
