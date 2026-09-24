@@ -101,9 +101,11 @@ Simply run the installer and it will configure the patched files for whichever e
 
 | Patch | Stage | What it does |
 |---|---|---|
+| P1 | A | Sessions list visible **before** activation (the view's `when` is only set true inside `activate()`, ~9.5 s into a cold start). Without it the window restore and Custom Void's startup guard cannot land on Claude Code and fall back to Claude Accounts |
 | P1_session_cmd | A | Registers the Session Info command in `package.json` |
 | P3, P3_cwd | A | Path normalisation for mapped/UNC drives (session folder hashing) |
 | P3_unc | A | `\\server\share` workspaces: 2.1.280's lister strips the share root's trailing `\` and searches a folder that does not exist (0 sessions); also search the path as given |
+| P3_unc_root | A | The same bug at its source: both copies of 2.1.280's path resolver (host + SDK) keep a share root's trailing `\`, so chats in `\\server\share` projects open with their messages instead of empty |
 | P8 | B | Status bar, usage, account switcher, auto-swap, session size, launches `sync-shared.ps1` |
 | P2_fk | C | Realpath bypass in 2.1.280's `FK()` helper — **unverified**, only matters on mapped drives |
 | P13, P13_panel | C | Feed the active chat to the status bar |
@@ -113,7 +115,7 @@ Simply run the installer and it will configure the patched files for whichever e
 | P15 | C | `[Name]` title → native group |
 | P16 | C | Heal chat titles that drifted out of the 64 KB read window; fix stale title sidecars |
 
-**Retired for 2.1.280:** P1 (the sessions list is now always enabled natively) and P11 (the old `[Name]` grouping hack — replaced by native groups via P15). P2 and P3b no longer match anything on 2.1.280 and report `⊘ n/a`. Features P1–P7 and P9–P10 of the original set have been native since v2.1.206.
+**Retired for 2.1.280:** P11 (the old `[Name]` grouping hack — replaced by native groups via P15). P1 was retired on 23 Sep on the assumption it had gone native and **restored on 24 Sep**: 2.1.280 only enables the sessions list once `activate()` runs, which is too late for a cold start. Lesson: check the state *before* activation, not just after. P2 and P3b no longer match anything on 2.1.280 and report `⊘ n/a`. Features P1–P7 and P9–P10 of the original set have been native since v2.1.206.
 
 ---
 

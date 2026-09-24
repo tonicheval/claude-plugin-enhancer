@@ -16,7 +16,7 @@ console.log(`====================================================${RESET}\n`);
 
 // Staged rollout. Patches are applied cumulatively by risk, so a new Claude Code release can be
 // brought up one stage at a time with a restart + on-screen check in between:
-//   A  P1_session_cmd, P3, P3_cwd, P3_unc      (package.json + path normalisation)
+//   A  P1, P1_session_cmd, P3, P3_cwd, P3_unc, P3_unc_root  (package.json + path normalisation)
 //   B  A + P8                                  (status bar / account switcher IIFE in activate())
 //   C  B + P2/P2_fk, P3b, P13*, P12*, P14, P15, P16  (everything - the default)
 // Shared chat needs B AND C: P8 spawns sync-shared.ps1 (moves [s] chats to General\ and symlinks
@@ -175,9 +175,15 @@ try {
             return updated;
         }
 
-        // P1 (force the sessions sidebar visible) - RETIRED 2026-09-23 for 2.1.280.
-        // 2.1.280 sets the claude-vscode.sessionsListEnabled context to true unconditionally in
-        // activate(), so rewriting the view's `when` clause no longer changes anything.
+        // P1: sessions list visible from the first moment, not only after activate().
+        // The view's `when` is claude-vscode.sessionsListEnabled, which 2.1.280 sets to true inside
+        // activate(). On a cold start that runs ~9.5 s after the window opens, so until then the
+        // Claude Code container has NO visible view - the window restore and Custom Void's 6 s
+        // "land on Claude Code" guard cannot select it and the bar falls back to Claude Accounts.
+        // (Retired by mistake on 2026-09-23 because the post-activation state looked identical;
+        // restored 2026-09-24 after the right column kept opening on Claude Accounts.)
+        pkgContent = applyRegex(pkgContent, /"when": "claude-vscode.sessionsListEnabled"/g, '"when": "true"', 'P1 (Sessions list visible before activation)');
+        fs.writeFileSync(pkg, pkgContent);
         
         if (stage('C')) { // ---- stage C: P2 / P2_fk ----
         // P2: Webview initialization realpathSync bypass (Symlink fix for frontend)
@@ -256,6 +262,24 @@ try {
         });
         if (p3unc) console.log(`      \x1b[32m✔ P3_unc (UNC share root lists its sessions): Applied\x1b[0m`);
         else { console.log(`      \x1b[31m✘ P3_unc (UNC share root lists its sessions): Not found - \\\\server\\share workspaces will list NO sessions\x1b[0m`); failures.push(`${appName}: P3_unc - not found`); }
+
+        // P3_unc_root: the same trailing-backslash bug at its SOURCE. 2.1.280 resolves a workspace
+        // path with one helper (native realpath -> drops a share root's trailing "\"), and three
+        // things call it: the session list, the transcript reader behind readSessionForHost (so
+        // every chat in a \\server\share project opened EMPTY - shared ones included), and one
+        // more. P3_unc above only covered the list. Re-add the "\" to a bare share root, which is
+        // exactly the form the CLI writes transcripts under (path.resolve). Deeper UNC paths and
+        // drive paths are untouched. The bundle carries TWO copies of this helper (the host's own
+        // and the SDK's - 7 and 3 call sites in 2.1.280), so every copy is patched (/g).
+        // Verified 2026-09-24: \\192.168.1.120\3D Total, a real chat and a shared chat read 0
+        // messages before, their full transcripts after.
+        let p3uncRoot = 0;
+        ejsContent = ejsContent.replace(/async function ([a-zA-Z0-9_$]+)\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)\)\{(try\{if\(\3!==void 0&&\3\.hoverRestOn\)\{let ([a-zA-Z0-9_$]+)=await \3\.realPath\(\2\);return ([a-zA-Z0-9_$]+)\(\5\.ok&&\5\.value\.found\?\5\.value\.path:\2\)\}return \6\(await [a-zA-Z0-9_$]+\.realpath\(\2\)\)\}catch\{return \6\(\2\)\})\}/g, (match, fn, a, b, body) => {
+            p3uncRoot++;
+            return `async function ${fn}(${a},${b}){let __r=await(async()=>{${body}})();try{const B=String.fromCharCode(92);if(process.platform==="win32"&&typeof __r==="string"&&__r.startsWith(B+B)&&!__r.endsWith(B)&&__r.slice(2).split(B).filter(Boolean).length===2)__r=__r+B}catch{}return __r}`;
+        });
+        if (p3uncRoot) console.log(`      \x1b[32m✔ P3_unc_root (share-root path keeps its trailing backslash - chats open): Applied to ${p3uncRoot} resolver copies\x1b[0m`);
+        else { console.log(`      \x1b[31m✘ P3_unc_root: Not found - chats in \\\\server\\share projects will open EMPTY\x1b[0m`); failures.push(`${appName}: P3_unc_root - not found`); }
 
         if (stage('C')) { // ---- stage C: P3b ----
         // P3b: async realpath bypass (hung on mapped/network drives when listing sessions).
