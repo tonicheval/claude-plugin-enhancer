@@ -143,11 +143,21 @@ Claude Code in the editor runs *through* this extension. If `activate()` throws,
 
 | Stage | Command | Check on screen after restart |
 |---|---|---|
-| **A** | `install.bat A` | Agent answers, session list shows |
+| **A** | `install.bat A` | Agent answers, session list shows; right column opens on **Claude Code**, not Claude Accounts |
 | **B** | `install.bat B` | Status bar usage, account swap, Session Info |
 | **C** | `install.bat C` (or plain `install.bat`) | Shared chats listed in italics and open with history; `[Name]` chats grouped |
 
 Stages are cumulative. Commit installer changes only after stage C is confirmed on screen.
+
+**Restart = cold start.** Close *every* window so the app fully exits, then reopen. A window reload hides startup-only bugs (on 24 Sep the Claude Code tab regression only showed on a cold start).
+
+**Check every kind of workspace, not just the one you are in.** Each broke differently on 2.1.280:
+
+| Workspace | Example | What to check |
+|---|---|---|
+| Local drive | `C:\AG Junction\GetHome` | Chats list and open |
+| Mapped drive | `Q:\` (RaiDrive) | Chats list and open |
+| UNC share root | `\\192.168.1.120\3D Total` | Chats list **and open with their messages** (P3_unc / P3_unc_root) |
 
 **Safety built in:**
 * P8 and the P13/P15 hooks are wrapped in `try/catch` — a throw degrades that feature and is logged as `[enhancer] …` instead of killing activation.
